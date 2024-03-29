@@ -672,7 +672,7 @@ void run_sgemm_blocktiling(torch::Tensor A, torch::Tensor B, torch::Tensor C){
             torch::Tensor Bij = B[i][j];
             torch::Tensor Cij = C[i][j];
             // compute the matrix multiplication
-            sgemm2DBlocktiling<<<gridDim, blockDim>>>(A.size(2), B.size(3), A.size(3), Aij.data_ptr<float>(), Bij.data_ptr<float>(), Cij.data_ptr<float>());
+            sgemm_naive_coalesced<<<gridDim, blockDim>>>(A.size(2), B.size(3), A.size(3), Aij.data_ptr<float>(), Bij.data_ptr<float>(), Cij.data_ptr<float>());
             // allocate memory for output on GPU in cuda
         }
     }
