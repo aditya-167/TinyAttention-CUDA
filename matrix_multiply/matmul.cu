@@ -13,13 +13,13 @@
 
 #define CEIL_DIV(M, N) (((M) + (N)-1) / (N))
 
-#define BM 32
-#define BN 32
-#define BK 32
-#define TM 4
-#define TN 4
+#define BM 64
+#define BN 64
+#define BK 8
+#define TM 8
+#define TN 8
 
-# define BD 4
+# define BD 1
 
 #define tilesize 32
 
@@ -52,7 +52,7 @@ __global__ void sgemm_naive(int M, int N, int K, float *A,
 }
 
 
-__global__ void sgemm_naive_batched(int B, int M, int N, int K, float *A,
+__global__ void sgemm_naive_batched(int L, int M, int N, int K, float *A,
                             float *B, float *C) {
     // this kernel uses x as the row index and y as the column index (which leads to bad coalescing)
   // compute position in C that this thread is responsible for
@@ -62,9 +62,11 @@ __global__ void sgemm_naive_batched(int B, int M, int N, int K, float *A,
   const uint y = blockIdx.y * blockDim.y + threadIdx.y;
   const uint batch = blockIdx.z * blockDim.z + threadIdx.z;
 
-  const uint offset = batch * M * N;
+  const uint offset_A = batch * M * K;
+  const uint offset_B = batch * K * N;
+  const uint offset_C = batch * M * N;
 
-  if (batch >= B) {
+  if (batch >= L) {
     return;
   }
   
@@ -73,11 +75,11 @@ __global__ void sgemm_naive_batched(int B, int M, int N, int K, float *A,
   if (x < M && y < N) {
     float tmp = 0.0;
     for (int i = 0; i < K; ++i) {
-      tmp += A[offset + x * K + i] * B[offset + i * N + y];
+      tmp += A[offset_A + x * K + i] * B[offset_B + i * N + y];
 
     }
     // C = α*(A@B)+β*C
-    C[offset + x * N + y] = tmp;
+    C[offset_C + x * N + y] = tmp;
   }
 }
 
@@ -100,6 +102,36 @@ __global__ void sgemm_naive_coalesced(int M, int N, int K, float *A,
     }
     // C = α*(A@B)+β*C
     C[y*N+x] = tmp;
+  }
+}
+
+
+__global__ void sgemm_naive_coalesced_batched(int L, int M, int N, int K, float *A,
+                            float *B, float *C) {
+    // this kernel uses x as the col index and y as the row index (which leads to better coalescing) and a decent speedup
+  // compute position in C that this thread is responsible for
+// A is MxK, B is KxN, C is MxN
+
+  const uint x = blockIdx.x * blockDim.x + threadIdx.x;
+  const uint y = blockIdx.y * blockDim.y + threadIdx.y;
+  const uint batch = blockIdx.z * blockDim.z + threadIdx.z;
+
+  const uint offset_A = batch * M * K;
+  const uint offset_B = batch * K * N;
+  const uint offset_C = batch * M * N;
+
+  if (batch >= L) {
+    return;
+  }
+  // `if` condition is necessary for when M or N aren't multiples of 32.
+  if (x < N && y < M) {
+    float tmp = 0.0;
+    for (int i = 0; i < K; ++i) {
+      tmp += A[offset_A+y*K+i] * B[offset_B+i*N+x];
+
+    }
+    // C = α*(A@B)+β*C
+    C[offset_C+y*N+x] = tmp;
   }
 }
 
@@ -148,6 +180,65 @@ __global__ void sgemm_naive_coalesced_tiled(int M, int N, int K, float *A,
         __syncthreads();
     }
     C[y*N+x] = val;
+}
+
+
+
+
+__global__ void sgemm_naive_coalesced_tiled_batched(int L, int M, int N, int K, float *A,
+                            float *B, float *C) {
+    // assign smem
+    __shared__ float As[tilesize][tilesize];
+    __shared__ float Bs[tilesize][tilesize];
+
+    
+
+    // this kernel uses x as the col index and y as the row index (which leads to better coalescing) and a decent speedup
+    // compute position in C that this thread is responsible for
+    const uint x = blockIdx.x * blockDim.x + threadIdx.x;
+    const uint y = blockIdx.y * blockDim.y + threadIdx.y;
+    const uint batch = blockIdx.z * blockDim.z + threadIdx.z;
+
+    const uint offset_A = batch * M * K;
+    const uint offset_B = batch * K * N;
+    const uint offset_C = batch * M * N;
+
+    if (batch >= L) {
+      return;
+    }
+
+    const uint tx = threadIdx.x;
+    const uint ty = threadIdx.y;
+
+    const uint blocksize=blockDim.x;
+
+    
+    float val = 0.0;
+    // loop over phases of tiling 
+    for(int i=0;i<K;i+=blocksize) {
+        //load to shared mem
+        
+        if (y<M && i+tx<K){
+
+            As[ty][tx] = A[offset_A+y*K+i+tx];
+        }
+        else{
+            As[ty][tx] = 0;
+        }
+        if (x<N && i+ty<K){
+            Bs[ty][tx] = B[offset_B+(i+ty)*N+x];
+        }
+        else{
+            Bs[ty][tx] = 0;
+        }
+        
+        __syncthreads();
+        for(int j=0;j<blocksize;j++) {
+            val += As[ty][j]*Bs[j][tx];
+        }
+        __syncthreads();
+    }
+    C[offset_C+y*N+x] = val;
 }
 
 
@@ -379,7 +470,113 @@ __global__ void __launch_bounds__((BM * BN) / (TM * TN), 1)
   }
 }
 
-void run_sgemm_naive(torch::Tensor A, torch::Tensor B){
+
+__global__ void __launch_bounds__((BM * BN) / (TM * TN), 1)
+    sgemm2DBlocktiling_batched(int L, int M, int N, int K, const float *A,
+                       const float *B,float *C) {
+  const uint cRow = blockIdx.y;
+  const uint cCol = blockIdx.x;
+
+  
+  const uint batch = blockIdx.z * blockDim.z + threadIdx.z;
+
+  const uint offset_A = batch * M * K;
+  const uint offset_B = batch * K * N;
+  const uint offset_C = batch * M * N;
+  
+
+  if (batch >= L) {
+    return;
+  }
+  
+  const uint totalResultsBlocktile = BM * BN;
+  // A thread is responsible for calculating TM*TN elements in the blocktile
+  const uint numThreadsBlocktile = totalResultsBlocktile / (TM * TN);
+
+  // ResultsPerBlock / ResultsPerThread == ThreadsPerBlock
+  assert(numThreadsBlocktile == blockDim.x);
+
+  // BN/TN are the number of threads to span a column
+  const int threadCol = threadIdx.x % (BN / TN);
+  const int threadRow = threadIdx.x / (BN / TN);
+
+  // allocate space for the current blocktile in smem
+  __shared__ float As[BM * BK];
+  __shared__ float Bs[BK * BN];
+
+  // Move blocktile to beginning of A's row and B's column
+  A += cRow * BM * K + offset_A;
+  B += cCol * BN + offset_B;
+  C += cRow * BM * N + cCol * BN + offset_C;
+
+  // calculating the indices that this thread will load into SMEM
+  const uint innerRowA = threadIdx.x / BK;
+  const uint innerColA = threadIdx.x % BK;
+  // calculates the number of rows of As that are being loaded in a single step
+  // by a single block
+  const uint innerRowB = threadIdx.x / BN;
+  const uint innerColB = threadIdx.x % BN;
+  // for both As and Bs we want each load to span the full column-width, for
+  // better GMEM coalescing (as opposed to spanning full row-width and iterating
+  // across columns)
+  const uint strideB = numThreadsBlocktile / BN;
+  const uint strideA = numThreadsBlocktile / BK;
+
+  // allocate thread-local cache for results in registerfile
+  float threadResults[TM * TN] = {0.0};
+  // register caches for As and Bs
+  float regM[TM] = {0.0};
+  float regN[TN] = {0.0};
+
+  // outer-most loop over block tiles
+  for (uint bkIdx = 0; bkIdx < K; bkIdx += BK) {
+    // populate the SMEM caches
+    for (uint loadOffset = 0; loadOffset < BM; loadOffset += strideA) {
+      As[(innerRowA + loadOffset) * BK + innerColA] =
+          A[(innerRowA + loadOffset) * K + innerColA];
+    }
+    for (uint loadOffset = 0; loadOffset < BK; loadOffset += strideB) {
+      Bs[(innerRowB + loadOffset) * BN + innerColB] =
+          B[(innerRowB + loadOffset) * N + innerColB];
+    }
+    __syncthreads();
+
+    // advance blocktile
+    A += BK;     // move BK columns to right
+    B += BK * N; // move BK rows down
+  
+  
+    // calculate per-thread results
+    for (uint dotIdx = 0; dotIdx < BK; ++dotIdx) {
+      // block into registers
+      for (uint i = 0; i < TM; ++i) {
+        regM[i] = As[(threadRow * TM + i) * BK + dotIdx];
+      }
+      for (uint i = 0; i < TN; ++i) {
+        regN[i] = Bs[dotIdx * BN + threadCol * TN + i];
+      }
+      for (uint resIdxM = 0; resIdxM < TM; ++resIdxM) {
+        for (uint resIdxN = 0; resIdxN < TN; ++resIdxN) {
+          threadResults[resIdxM * TN + resIdxN] +=
+             regM[resIdxM] * regN[resIdxN];
+        }
+      }
+    }
+    //a =     regM[2];
+    //printf("a: %f\n", a);
+    __syncthreads();
+  }
+
+  // write out the results
+  for (uint resIdxM = 0; resIdxM < TM; ++resIdxM) {
+    for (uint resIdxN = 0; resIdxN < TN; ++resIdxN) {
+      C[(threadRow * TM + resIdxM) * N + threadCol * TN + resIdxN] =
+          threadResults[resIdxM * TN + resIdxN];
+    }
+  }
+}
+
+void run_sgemm_naive(torch::Tensor A, torch::Tensor B, torch::Tensor C){
     dim3 gridDim(CEIL_DIV(B.size(3), 32), CEIL_DIV(A.size(2), 32));
     dim3 blockDim(32,32);
 
@@ -398,18 +595,17 @@ void run_sgemm_naive(torch::Tensor A, torch::Tensor B){
 
 }
 
-void run_sgemm_naive_batched(torch::Tensor A, torch::Tensor B){
+void run_sgemm_naive_batched(torch::Tensor A, torch::Tensor B, torch::Tensor C){
     
-    dim3 gridDim(CEIL_DIV(B.size(3), 32), CEIL_DIV(A.size(2), 32), CEIL_DIV(A.size(0)*A.size(1),BD));
+    dim3 gridDim(CEIL_DIV(B.size(3), 32), CEIL_DIV(A.size(2), 32), CEIL_DIV(A.size(0)*A.size(1), BD));
     dim3 blockDim(32,32,BD);
-
-    sgemm_naive_batched<<<gridDim, blockDim>>>(A.size(0)*A.size(1),A.size(2), B.size(3), A.size(3), Aij.data_ptr<float>(), Bij.data_ptr<float>(), Cij.data_ptr<float>());
-            // allocate memory for output on GPU in cuda
-
+    int L = A.size(0)*A.size(1);
+    sgemm_naive_batched<<<gridDim, blockDim>>>(L, A.size(2), B.size(3), A.size(3), A.data_ptr<float>(), B.data_ptr<float>(), C.data_ptr<float>());
+    return;
 
 }
 
-void run_sgemm_coalesced(torch::Tensor A, torch::Tensor B){
+void run_sgemm_coalesced(torch::Tensor A, torch::Tensor B, torch::Tensor C){
     dim3 gridDim(CEIL_DIV(B.size(3), 32), CEIL_DIV(A.size(2), 32));
     dim3 blockDim(32,32);
 
@@ -427,12 +623,16 @@ void run_sgemm_coalesced(torch::Tensor A, torch::Tensor B){
     }
 }
 
-void run_sgemm_coalesced_batched(torch::Tensor A, torch::Tensor B){
-  
+void run_sgemm_coalesced_batched(torch::Tensor A, torch::Tensor B, torch::Tensor C){
+    dim3 gridDim(CEIL_DIV(B.size(3), 32), CEIL_DIV(A.size(2), 32), CEIL_DIV(A.size(0)*A.size(1),BD));
+    dim3 blockDim(32,32,BD);
+    int L = A.size(0)*A.size(1);
+    sgemm_naive_coalesced_batched<<<gridDim, blockDim>>>(L, A.size(2), B.size(3), A.size(3), A.data_ptr<float>(), B.data_ptr<float>(), C.data_ptr<float>());
+    return;
 
 }
 
-void run_sgemm_coalesced_tiled(torch::Tensor A, torch::Tensor B){
+void run_sgemm_coalesced_tiled(torch::Tensor A, torch::Tensor B, torch::Tensor C){
     dim3 gridDim(CEIL_DIV(B.size(3), 32), CEIL_DIV(A.size(2), 32));
     dim3 blockDim(32,32);
 
@@ -451,12 +651,16 @@ void run_sgemm_coalesced_tiled(torch::Tensor A, torch::Tensor B){
 
 }
 
-void run_sgemm_coalesced_tiled_batched(torch::Tensor A, torch::Tensor B){
-  
+void run_sgemm_coalesced_tiled_batched(torch::Tensor A, torch::Tensor B, torch::Tensor C){
+    dim3 gridDim(CEIL_DIV(B.size(3), 32), CEIL_DIV(A.size(2), 32), CEIL_DIV(A.size(0)*A.size(1),BD));
+    dim3 blockDim(32,32,BD);
+    int L = A.size(0)*A.size(1);
+    sgemm_naive_coalesced_tiled_batched<<<gridDim, blockDim>>>(L, A.size(2), B.size(3), A.size(3), A.data_ptr<float>(), B.data_ptr<float>(), C.data_ptr<float>());
+    return;
 
 }
 
-void run_sgemm_blocktiling(torch::Tensor A, torch::Tensor B){
+void run_sgemm_blocktiling(torch::Tensor A, torch::Tensor B, torch::Tensor C){
     dim3 gridDim(CEIL_DIV(B.size(3), BN), CEIL_DIV(A.size(2), BM));
     dim3 blockDim(CEIL_DIV(BM * BN, (TM * TN)));
 
@@ -468,65 +672,46 @@ void run_sgemm_blocktiling(torch::Tensor A, torch::Tensor B){
             torch::Tensor Bij = B[i][j];
             torch::Tensor Cij = C[i][j];
             // compute the matrix multiplication
-            sgemm_naive_coalesced_tiled<<<gridDim, blockDim>>>(A.size(2), B.size(3), A.size(3), Aij.data_ptr<float>(), Bij.data_ptr<float>(), Cij.data_ptr<float>());
+            sgemm2DBlocktiling<<<gridDim, blockDim>>>(A.size(2), B.size(3), A.size(3), Aij.data_ptr<float>(), Bij.data_ptr<float>(), Cij.data_ptr<float>());
             // allocate memory for output on GPU in cuda
         }
     }
 
 }
 
-void run_sgemm_blocktiling_batched(torch::Tensor A, torch::Tensor B){
-  
-
-}
+void run_sgemm_blocktiling_batched(torch::Tensor A, torch::Tensor B, torch::Tensor C){
+    dim3 gridDim(CEIL_DIV(B.size(3), BN), CEIL_DIV(A.size(2), BM), CEIL_DIV(A.size(0)*A.size(1),BD));
+    dim3 blockDim((BM * BN)/(TM * TN), BD);
+    int L = A.size(0)*A.size(1);
+    sgemm2DBlocktiling_batched<<<gridDim, blockDim>>>(L, A.size(2), B.size(3), A.size(3), A.data_ptr<float>(), B.data_ptr<float>(), C.data_ptr<float>());
+    return;
+    }
 
 
 
 torch::Tensor forward(torch::Tensor A, torch::Tensor B) {
-
-  double start, end;
+    double start, end;
     start = getTimeStamp();
     torch::Tensor C = torch::zeros({A.size(0), A.size(1), A.size(2), B.size(3)}, torch::kCUDA);
     
 
 
-    // A and B are 4D tensors in row major format: 
+    
     // A = (batchsize, head, M, K)
     // B = (batchsize, head, K, N)
     // C = (batchsize, head, M, N)
+
     // Goal is for each batch, head compute A[batch,head] @ B[batch,head]
     // + 20% speedup over nontiled coalesced
     // + 500% speedup by using threadcoarsening and tiled together! (code is a freakin mess tho)
-
-
     
-    // allocate memory for output on CPU
+    // further small speed up by using he bathced versions of the kernels
+
+    // streaming not really beneficial probably as we dont have any data loading happening
     
-    //dim3 gridDim(CEIL_DIV(B.size(3), BN), CEIL_DIV(A.size(2), BM));
-    // make blockDim 1-dimensional, but don't change number of threads
-    //dim3 blockDim(CEIL_DIV(BM * BN, (TM * TN)));
-    dim3 gridDim(CEIL_DIV(B.size(3), 32), CEIL_DIV(A.size(2), 32));
-    dim3 blockDim(32,32);
-    // loop over batchsize and head
-    double start, end;
-    start = getTimeStamp();
-    for (int i = 0; i < A.size(0); i++) {
-        for (int j = 0; j < A.size(1); j++) {
-            // get the i-th batch and j-th head
-            torch::Tensor Aij = A[i][j];
-            torch::Tensor Bij = B[i][j];
-            torch::Tensor Cij = C[i][j];
-            // compute the matrix multiplication
-            sgemm_naive<<<gridDim, blockDim>>>(A.size(2), B.size(3), A.size(3), Aij.data_ptr<float>(), Bij.data_ptr<float>(), Cij.data_ptr<float>());
-            // allocate memory for output on GPU in cuda
-        }
-    }
+    run_sgemm_blocktiling_batched(A, B, C);
     cudaDeviceSynchronize();
     end = getTimeStamp();
     printf("Time taken: %lf\n", (end-start));
-
-
-    // thus we have batchsize * head many independent matmuls
     return C;
-
 }
