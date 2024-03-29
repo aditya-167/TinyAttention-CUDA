@@ -12,14 +12,14 @@ minimal_matmul = load(name='matmul', sources=['main.cpp', 'matmul.cu'], extra_cu
 # n_head = 12
 # seq_len = 128
 # head_embd = 64
-batch_size = 1
-n_head = 1
-seq_len = 4096
-head_embd = 4096
+batch_size = 3
+n_head = 3
+seq_len = 128
+head_embd = 128
 
 
-q = torch.rand(batch_size, n_head, seq_len, head_embd).cuda()
-k = torch.rand(batch_size, n_head, head_embd, seq_len).cuda()
+q = torch.ones(batch_size, n_head, seq_len, seq_len).cuda()
+k = torch.rand(batch_size, n_head, seq_len, seq_len).cuda()
 #k = torch.rand([[[[1.0,3.0],[2.0,4.0]]]]).cuda()
 print('=== profiling manual attention ===')
 
