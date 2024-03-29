@@ -276,7 +276,7 @@ __global__ void __launch_bounds__((BM * BN) / (TM * TN), 1)
       // for this each thread leads a row TNxTM values
       // calculate the starting element of your data
       int startindex_relative = flatThreadIdx * TN*TM;
-      int offset = 
+      int offset = 1;
 
 
     }
@@ -387,9 +387,10 @@ torch::Tensor forward(torch::Tensor A, torch::Tensor B) {
     
     // allocate memory for output on CPU
     torch::Tensor C = torch::zeros({A.size(0), A.size(1), A.size(2), B.size(3)}, torch::kCUDA);
-    dim3 gridDim(CEIL_DIV(B.size(3), BN), CEIL_DIV(A.size(2), BM));
+    //dim3 gridDim(CEIL_DIV(B.size(3), BN), CEIL_DIV(A.size(2), BM));
+    dim3 gridDim(CEIL_DIV(B.size(3), 32), CEIL_DIV(A.size(2), 32));
     // make blockDim 1-dimensional, but don't change number of threads
-    dim3 blockDim((BM * BN) / (TM * TN));
+    dim3 blockDim(32,32);
     // loop over batchsize and head
     double start, end;
     start = getTimeStamp();
@@ -400,7 +401,7 @@ torch::Tensor forward(torch::Tensor A, torch::Tensor B) {
             torch::Tensor Bij = B[i][j];
             torch::Tensor Cij = C[i][j];
             // compute the matrix multiplication
-            sgemm2DBlocktiling<<<gridDim, blockDim>>>(A.size(2), B.size(3), A.size(3), Aij.data_ptr<float>(), Bij.data_ptr<float>(), Cij.data_ptr<float>());
+            sgemm_naive_coalesced<<<gridDim, blockDim>>>(A.size(2), B.size(3), A.size(3), Aij.data_ptr<float>(), Bij.data_ptr<float>(), Cij.data_ptr<float>());
             // allocate memory for output on GPU in cuda
         }
     }
