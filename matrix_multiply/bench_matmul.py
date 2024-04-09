@@ -28,8 +28,12 @@ def manual_matmul(q, k):
     y = torch.matmul(q, k)
     return y
 
+def manual_matmul_transpose(q, k):
+    y = torch.matmul(q, k, transpose_b=True)
+    return y
+
 with torch.autograd.profiler.profile(use_cuda=True) as prof:
-    manual_result = manual_matmul(q, k)
+    manual_result = manual_matmul_transpose(q, k)
 print(prof.key_averages().table(sort_by='cuda_time_total', row_limit=10))
 
 print('=== profiling minimal flash attention === ')
