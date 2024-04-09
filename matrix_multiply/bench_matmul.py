@@ -12,10 +12,10 @@ minimal_matmul = load(name='matmul', sources=['main.cpp', 'matmul.cu'], extra_cu
 # n_head = 12
 # seq_len = 128
 # head_embd = 64
-batch_size = 10
-n_head = 1
-seq_len = 5000
-head_embd = 5000
+batch_size = 3
+n_head = 10
+seq_len = 3000
+head_embd = 4000
 torch.cuda.empty_cache()
 
 q = torch.rand(batch_size, n_head, seq_len, head_embd).cuda()
@@ -39,5 +39,5 @@ with torch.autograd.profiler.profile(use_cuda=True) as prof:
 print(prof.key_averages().table(sort_by='cuda_time_total', row_limit=10))
 print(minimal_matmul.cpu())
 print(manual_result.cpu())
-# print('attn values sanity check:', torch.allclose(minimal_matmul, manual_result, rtol=0, atol=1e-02))
+print('attn values sanity check:', torch.allclose(minimal_matmul, manual_result, rtol=0, atol=1e-02))
 
