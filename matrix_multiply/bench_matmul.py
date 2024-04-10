@@ -19,7 +19,7 @@ head_embd = 4000
 torch.cuda.empty_cache()
 
 q = torch.rand(batch_size, n_head, seq_len, head_embd).cuda()
-k = torch.rand(batch_size, n_head, head_embd, seq_len).cuda()
+k = torch.rand(batch_size, n_head, seq_len, head_embd).cuda()
 #k = torch.rand([[[[1.0,3.0],[2.0,4.0]]]]).cuda()
 print('=== profiling manual attention ===')
 
@@ -29,19 +29,23 @@ def manual_matmul(q, k):
     return y
 
 def manual_matmul_transpose(q, k):
-    y = torch.matmul(q, k, transpose_b=True)
+    y = q @ k.transpose(-1, -2)
     return y
 
 with torch.autograd.profiler.profile(use_cuda=True) as prof:
     manual_result = manual_matmul_transpose(q, k)
+
+print(manual_result.shape)
+    
 print(prof.key_averages().table(sort_by='cuda_time_total', row_limit=10))
 
 print('=== profiling minimal flash attention === ')
 
 with torch.autograd.profiler.profile(use_cuda=True) as prof:
-    minimal_matmul = minimal_matmul.forward(q, k)
+    minimal_matmul = minimal_matmul.forward(q, k, True)
 print(prof.key_averages().table(sort_by='cuda_time_total', row_limit=10))
 print(minimal_matmul.cpu())
 print(manual_result.cpu())
+print(minimal_matmul.shape)
 print('attn values sanity check:', torch.allclose(minimal_matmul, manual_result, rtol=0, atol=1e-02))
 

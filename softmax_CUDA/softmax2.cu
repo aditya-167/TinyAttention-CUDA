@@ -65,7 +65,7 @@ void softmax_cpu(float *x, float *C, int M, int N, float softmax_scale) {
 int main() {
     // Example usage
     const int M = 40; // Number of examples
-    const int K = 40; // Number of classes
+    const int K = 60; // Number of classes
     const float threshold = 1e-5; // Threshold for verification
 
     // Random input data
@@ -133,7 +133,6 @@ int main() {
     return 0;
 }
 */
-
 torch::Tensor forward(torch::Tensor A) {
     const int batch_size = A.size(0);
     const int n_head = A.size(1);
@@ -145,8 +144,9 @@ torch::Tensor forward(torch::Tensor A) {
     torch::Tensor C = torch::zeros({batch_size, n_head, M, N}, A.options().device(torch::kCUDA));
     auto A_data = A.data_ptr<float>();
     auto C_data = C.data_ptr<float>();
-
-    dim3 blockDim(32, 32);
+    int threadsPerBlock = 256;
+    //dim3 blockDim(threadsPerBlock);
+    dim3 blockDim(threadsPerBlock);
     dim3 gridDim((M + blockDim.x - 1) / blockDim.x, (N + blockDim.y - 1) / blockDim.y);
 
     // Softmax scale
