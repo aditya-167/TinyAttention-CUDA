@@ -8,10 +8,6 @@ from torch.utils.cpp_extension import load
 minimal_transpose = load(name='transpose', sources=['main.cpp', 'transpose.cu'], extra_cuda_cflags=['-O2'])
 
 # Use small model params, otherwise slower than manual attention. See caveats in README.
-# batch_size = 16
-# n_head = 12
-# seq_len = 128
-# head_embd = 64
 batch_size = 1
 n_head = 1
 seq_len = 4096
@@ -19,8 +15,6 @@ head_embd = 4096
 
 
 q = torch.rand(batch_size, n_head, seq_len, head_embd).cuda()
-# k = torch.rand(batch_size, n_head, head_embd, seq_len).cuda()
-#k = torch.rand([[[[1.0,3.0],[2.0,4.0]]]]).cuda()
 print('=== profiling manual transpose ===')
 
 # Our minimal flash attention aims to be faster than this by avoiding HBM read/writes of N^2 matrices.
@@ -39,5 +33,5 @@ with torch.autograd.profiler.profile(use_cuda=True) as prof:
 print(prof.key_averages().table(sort_by='cuda_time_total', row_limit=10))
 print(minimal_transpose.cpu())
 print(manual_result.cpu())
-# print('attn values sanity check:', torch.allclose(minimal_transpose, manual_result, rtol=0, atol=1e-02))
 
+print('attn values sanity check:', torch.allclose(minimal_transpose, manual_result, rtol=0, atol=1e-02))

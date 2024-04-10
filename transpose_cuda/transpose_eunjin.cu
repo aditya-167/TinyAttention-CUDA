@@ -1,14 +1,6 @@
-#include <torch/types.h>
-#include <cuda.h>
-#include <cuda_runtime.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <sys/time.h>
-
-#include <algorithm>
-#include <cassert>
-#include <cstdio>
-#include <cstdlib>
-#include <cublas_v2.h>
-#include <cuda_runtime.h>
 
 #define TILE_DIM 32
 #define BLOCK_ROWS 8
@@ -94,95 +86,85 @@ __global__ void transposeNaive(float *d_A, float *d_T, int M, int N) {
 	}
 }
 
-__global__ void transposeCoalesced(float *odata, const float *idata)
-{
-  __shared__ float tile[TILE_DIM][TILE_DIM];
-    
-  int x = blockIdx.x * TILE_DIM + threadIdx.x;
-  int y = blockIdx.y * TILE_DIM + threadIdx.y;
-  int width = gridDim.x * TILE_DIM;
-
-  for (int j = 0; j < TILE_DIM; j += BLOCK_ROWS)
-     tile[threadIdx.y+j][threadIdx.x] = idata[(y+j)*width + x];
-
-  __syncthreads();
-
-  x = blockIdx.y * TILE_DIM + threadIdx.x;  // transpose block offset
-  y = blockIdx.x * TILE_DIM + threadIdx.y;
-
-  for (int j = 0; j < TILE_DIM; j += BLOCK_ROWS)
-     odata[(y+j)*width + x] = tile[threadIdx.x][threadIdx.y + j];
-}
-
 __global__ void transposeSharedMem( float *odata, float *idata, int width, int height ) {
 // __global__ void copySharedMem(float *odata, const float *idata){
     __shared__ float tile[TILE_DIM * TILE_DIM];
 
     int x = blockIdx.x * TILE_DIM + threadIdx.x;
     int y = blockIdx.y * TILE_DIM + threadIdx.y;
-    int width = gridDim.x * TILE_DIM;
+    // int width = gridDim.x * TILE_DIM;
 
     for (int j = 0; j < TILE_DIM; j += BLOCK_ROWS)
         tile[(threadIdx.y+j)*TILE_DIM + threadIdx.x] = idata[(y+j)*width + x];
 
     __syncthreads();
 
-    for (int j = 0; j < TILE_DIM; j += BLOCK_ROWS)
+    for (int j = 0; j < TILE_DIM; j += BLOCK_ROWS) {
         odata[(y+j)*width + x] = tile[(threadIdx.y+j)*TILE_DIM + threadIdx.x];          
     }
 
-    //---------------------------
-    // __shared__ float block[ (BLOCK_DIM+1) * BLOCK_DIM ];
-    
-    // int xBlock = blockDim.x * blockIdx.x;
-    // int yBlock = blockDim.y * blockIdx.y;
-    // int xIndex = xBlock + threadIdx.x;
-    // int yIndex = yBlock + threadIdx.y;
-    // int index_transpose;
-    // int index_out;
-    
-    // if( xIndex<width && yIndex<height ) {
-    //     int index_in = width*yIndex + xIndex;
-    //     int index_block = threadIdx.y * (BLOCK_DIM+1) + threadIdx.x;
-    //     index_transpose = threadIdx.x * (BLOCK_DIM+1) + threadIdx.y;
-    //     index_out = height * (xBlock+threadIdx.y) + yBlock + threadIdx.x;
-
-    //     block[index_block] = idata[index_in];
-    // }
-    // __syncthreads();
-
-    // if( xIndex<width && yIndex<height ) {
-    //     odata[index_out] = block[index_transpose];
-    // }
 }
 
-torch::Tensor forward(torch::Tensor A) {
-    // A and B are 4D tensors in row major format: 
-    // A = (batchsize, head, M, K)
+int main(int argc, char *argv[]) {
     // Set matrix size
-    const int M = A.size(2);
-    const int N = A.size(3);
+    int M = atoi(argv[1]);
+    int N = atoi(argv[2]);
+    if (M <= 0 || N <= 0) return 0;
+    size_t bytes = M * N * sizeof(float);
 
-    // Initialize A, Z to host memory
-    torch::Tensor C = torch::zeros({A.size(0), A.size(1), N, M}, A.options().device(torch::kCUDA));
-    auto A_data = A.data_ptr<float>();
-    auto C_data = C.data_ptr<float>();
-    int blockSize = 32;
+	float *h_A, *h_T;
+	float *d_A, *d_T;
 
-	dim3 blockDim(blockSize, blockSize);
+	// allocate host memory
+	h_A = (float *)malloc(M * N * sizeof(float));
+	h_T = (float *)malloc(M * N * sizeof(float));
+    // gpuErrchk(cudaHostAlloc((void **)&h_A, bytes, cudaHostAllocMapped));
+    // gpuErrchk(cudaHostAlloc((void **)&h_T, bytes, cudaHostAllocMapped));
+
+	// allocate device memory
+	gpuErrchk(cudaMalloc(&d_A, bytes));
+	gpuErrchk(cudaMalloc(&d_T, bytes));
+    
+	// initialize data
+	for (int i = 0; i < M * N; ++i) {
+        h_A[i] = (float)(rand() % 10 + 1);
+	}
+    
+	// copy host data to device
+    double start_total_GPU = timeStamp();
+	gpuErrchk(cudaMemcpy(d_A, h_A, bytes, cudaMemcpyHostToDevice));
+
+	// launch kernel instance
+	dim3 blockDim(32, 32);
 	dim3 gridDim((N + blockDim.x - 1)/blockDim.x, (M + blockDim.y - 1)/blockDim.y);
-
-    double start, end;
-    start = timeStamp();
-    transposeNaive<<<gridDim, blockDim>>>(A_data, C_data, M, N);
+	transposeNaive<<<gridDim, blockDim>>>(d_A, d_T, M, N);
+	// transposeCoalesced<<<gridDim, blockDim>>>(d_A, d_T);
     cudaDeviceSynchronize();
-    end = timeStamp();
 
-    printf("GPU execution time: %.4f milliseconds\n", (end-start));
+	// copy result back to host
+	gpuErrchk(cudaMemcpy(h_T, d_T, bytes, cudaMemcpyDeviceToHost));
+    double end_total_GPU = timeStamp();
+    float total_GPU_time = end_total_GPU - start_total_GPU;
+    printf("GPU execution time: %.4f milliseconds\n", total_GPU_time);
 
-	return C;
+  	// display results
+    displayResults(h_A, h_T, M, N);
+    validateResults(h_A, h_T, M, N);
+
+	// clean up data
+    free(h_A);
+    free(h_T);
+    // gpuErrchk(cudaFreeHost(h_A));
+    // gpuErrchk(cudaFreeHost(h_T));
+    gpuErrchk(cudaFree(d_A)); 
+    gpuErrchk(cudaFree(d_T));
+    gpuErrchk(cudaDeviceReset());
+
+	return 0;
 }
 
+// $ nvcc -arch sm_89 transpose_eunjin.cu -o transpose_eunjin
+// $ transpose
 
-// % nvcc -arch sm_89 transpose.cu -o transpose
-// % transpose
+// $ nvcc -arch sm_89 transpose_cuda/transpose_eunjin.cu -o transpose_cuda/transpose_eunjin
+// $ transpose_cuda/transpose_eunjin
