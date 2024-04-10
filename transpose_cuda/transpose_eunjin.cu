@@ -2,7 +2,8 @@
 #include <stdlib.h>
 #include <sys/time.h>
 
-#define BLOCK_ROWS 8
+#define TILE_DIM 32
+// #define BLOCK_ROWS 8
 #define BLOCK_DIM 16
 
 #define gpuErrchk(ans) { gpuAssert((ans), __FILE__, __LINE__); }
@@ -86,10 +87,10 @@ __global__ void transposeNaive(float *d_A, float *d_T, int M, int N) {
 
 __global__ void transpose(float *d_A, float *d_T, int M, int N)
 {
-	__shared__ float block[BLOCK_DIM][BLOCK_DIM+1];
+	__shared__ float block[TILE_DIM][TILE_DIM+1];
 	
-	unsigned int row = blockIdx.y * BLOCK_DIM + threadIdx.y;
-	unsigned int col = blockIdx.x * BLOCK_DIM + threadIdx.x;
+	unsigned int row = blockIdx.y * TILE_DIM + threadIdx.y;
+	unsigned int col = blockIdx.x * TILE_DIM + threadIdx.x;
     unsigned int index_in = row * N + col;
     unsigned int index_out = col * M + row;
 	
@@ -100,8 +101,8 @@ __global__ void transpose(float *d_A, float *d_T, int M, int N)
 
 	__syncthreads();
 
-	row = blockIdx.y * BLOCK_DIM + threadIdx.x;
-	col = blockIdx.x * BLOCK_DIM + threadIdx.y;
+	row = blockIdx.y * TILE_DIM + threadIdx.x;
+	col = blockIdx.x * TILE_DIM + threadIdx.y;
 	if((row < M) && (col < N) && (index_out < M*N))
 	{
 		d_T[index_out] = block[threadIdx.x][threadIdx.y];
