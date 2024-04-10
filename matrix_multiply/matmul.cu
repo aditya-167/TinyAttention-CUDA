@@ -576,6 +576,84 @@ __global__ void __launch_bounds__((BM * BN) / (TM * TN), 1)
   }
 }
 
+void run_sgemm_cublas(torch::Tensor A, torch::Tensor B, torch::Tensor C){
+
+    cudaError_t cudaStat;  // cudaMalloc status
+    cublasStatus_t stat;   // cuBLAS functions status
+    cublasHandle_t handle;
+
+    stat = cublasCreate(&handle);
+    const float alpha = 1.0;
+    const float beta = 0.0;
+    // loop over batchsize and head
+    for (int i = 0; i < A.size(0); i++) {
+        for (int j = 0; j < A.size(1); j++) {
+            // get the i-th batch and j-th head
+            torch::Tensor Aij = A[i][j];
+            torch::Tensor Bij = B[i][j];
+            torch::Tensor Cij = C[i][j];
+            // compute the matrix multiplication
+            // cublas expects A to be m x k, B to be k x n, and C to be m x n
+            // BUT in col major layout
+
+            stat = cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_N, B.size(3), A.size(2), B.size(2), &alpha, Bij.data_ptr<float>(), B.size(3) , Aij.data_ptr<float>(), A.size(3), &beta, Cij.data_ptr<float>(),B.size(3));
+            // allocate memory for output on GPU in cuda
+        }
+    }
+}
+
+
+void run_sgemm_cublas_batched(torch::Tensor A, torch::Tensor B, torch::Tensor C){
+    cudaError_t cudaStat;  // cudaMalloc status
+    cublasStatus_t stat;   // cuBLAS functions status
+    cublasHandle_t handle;
+
+    stat = cublasCreate(&handle);
+    const float alpha = 1.0;
+    const float beta = 0.0;
+    // loop over batchsize and head
+    // make array of pointers of elelments of A with stride of M*K
+    // make array of pointers of elelments of B with stride of K*N
+    // make array of pointers of elelments of C with stride of M*N
+
+    float *Aarray[A.size(0)*A.size(1)];
+    float *Barray[A.size(0)*A.size(1)];
+    float *Carray[A.size(0)*A.size(1)];
+
+    for (int i = 0; i < A.size(0); i++) {
+        for (int j = 0; j < A.size(1); j++) {
+            Aarray[i*A.size(1)+j] = A[i][j].data_ptr<float>();
+            Barray[i*B.size(1)+j] = B[i][j].data_ptr<float>();
+            Carray[i*C.size(1)+j] = C[i][j].data_ptr<float>();
+        }
+    }
+
+
+    float **Aarray_d;
+    float **Barray_d;
+    float **Carray_d;
+    cudaMalloc((void**)&Aarray_d, A.size(0)*A.size(1)*sizeof(float*));
+    cudaMalloc((void**)&Barray_d, A.size(0)*A.size(1)*sizeof(float*));
+    cudaMalloc((void**)&Carray_d, A.size(0)*A.size(1)*sizeof(float*));
+
+    cudaMemcpy(Aarray_d, Aarray, A.size(0)*A.size(1)*sizeof(float*), cudaMemcpyHostToDevice);
+    cudaMemcpy(Barray_d, Barray, A.size(0)*A.size(1)*sizeof(float*), cudaMemcpyHostToDevice);
+    cudaMemcpy(Carray_d, Carray, A.size(0)*A.size(1)*sizeof(float*), cudaMemcpyHostToDevice);
+    
+    stat = cublasSgemmBatched(handle, CUBLAS_OP_N, CUBLAS_OP_N, B.size(3), A.size(2), B.size(2), &alpha, Barray_d, B.size(3) , Aarray_d, B.size(2), &beta, Carray_d, B.size(3), B.size(0)*B.size(1));
+    // for (int i = 0; i < A.size(0); i++) {
+    //     for (int j = 0; j < A.size(1); j++) {
+    //         // get the i-th batch and j-th head
+    //         torch::Tensor Aij = A[i][j];
+    //         torch::Tensor Bij = B[i][j];
+    //         torch::Tensor Cij = C[i][j];
+    //         // compute the matrix multiplication
+    //         stat = cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_N, A.size(3), A.size(2), B.size(3), &alpha, Aij.data_ptr<float>(),A.size(3) , Bij.data_ptr<float>(), B.size(3), &beta, Cij.data_ptr<float>(),A.size(3));
+    //         // allocate memory for output on GPU in cuda
+    //     }
+    // }
+}
+
 void run_sgemm_naive(torch::Tensor A, torch::Tensor B, torch::Tensor C){
     dim3 gridDim(CEIL_DIV(B.size(3), 32), CEIL_DIV(A.size(2), 32));
     dim3 blockDim(32,32);
@@ -709,7 +787,8 @@ torch::Tensor forward(torch::Tensor A, torch::Tensor B) {
 
     // streaming not really beneficial probably as we dont have any data loading happening
     
-    run_sgemm_blocktiling_batched(A, B, C);
+    //run_sgemm_blocktiling_batched(A, B, C);
+    run_sgemm_cublas_batched(A, B, C);
     cudaDeviceSynchronize();
     end = getTimeStamp();
     printf("Time taken: %lf\n", (end-start));
