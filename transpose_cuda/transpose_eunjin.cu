@@ -1,19 +1,10 @@
-#include <torch/types.h>
-#include <cuda.h>
-#include <cuda_runtime.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <sys/time.h>
-
-#include <algorithm>
-#include <cassert>
-#include <cstdio>
-#include <cstdlib>
-#include <cublas_v2.h>
-#include <cuda_runtime.h>
 
 #define TILE_DIM 32
 #define BLOCK_ROWS 8
 #define BLOCK_DIM 16
-// const int NUM_REPS = 100;
 
 #define gpuErrchk(ans) { gpuAssert((ans), __FILE__, __LINE__); }
 inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=true) {
@@ -85,16 +76,18 @@ void validateResults(float *h_A, float *h_T, int M, int N){
 }
 
 __global__ void transposeNaive(float *d_A, float *d_T, int M, int N) {
-	int row = blockIdx.y * blockDim.y + threadIdx.y;
-	int col = blockIdx.x * blockDim.x + threadIdx.x;
+	int row = blockIdx.y * BLOCK_DIM + threadIdx.y;
+	int col = blockIdx.x * BLOCK_DIM + threadIdx.x;
 
-	// swap elements via transpose
-	if (row < M && col < N) {
-		d_T[col * M + row] = d_A[row * N + col];
-	}
+	// if (row < M && col < N) {
+	// 	d_T[col * M + row] = d_A[row * N + col];
+	// }
+    for (int j = 0; j < TILE_DIM; j+= BLOCK_ROWS)
+    d_T[col*M + (row+j)] = d_A[(row+j)*N + col];
 }
 
-__global__ void transpose(float *d_A, float *d_T, int M, int N) {
+__global__ void transpose(float *d_A, float *d_T, int M, int N)
+{
 	__shared__ float tile[TILE_DIM][TILE_DIM+1];
 	
 	unsigned int row = blockIdx.y * TILE_DIM + threadIdx.y;
@@ -102,7 +95,8 @@ __global__ void transpose(float *d_A, float *d_T, int M, int N) {
     unsigned int index_in = row * N + col;
     unsigned int index_out = col * M + row;
 	
-    if((row < M) && (col < N) && (index_in < M*N)) {
+    if((row < M) && (col < N) && (index_in < M*N))
+	{
 		tile[threadIdx.y][threadIdx.x] = d_A[index_in];
 	}
 
@@ -110,38 +104,79 @@ __global__ void transpose(float *d_A, float *d_T, int M, int N) {
 
 	row = blockIdx.y * TILE_DIM + threadIdx.x;
 	col = blockIdx.x * TILE_DIM + threadIdx.y;
-	if((row < M) && (col < N) && (index_out < M*N)) {
+	if((row < M) && (col < N) && (index_out < M*N))
+	{
 		d_T[index_out] = tile[threadIdx.x][threadIdx.y];
 	}
 }
 
-torch::Tensor forward(torch::Tensor A) {
-    // A and B are 4D tensors in row major format:
-    // A = (batchsize, head, M, K)
-    const int M = A.size(2);
-    const int N = A.size(3);
 
-    // Initialize A, Z to host memory
-    torch::Tensor C = torch::zeros({A.size(0), A.size(1), N, M}, A.options().device(torch::kCUDA));
-    auto A_data = A.data_ptr<float>();
-    auto C_data = C.data_ptr<float>();
+int main(int argc, char *argv[]) {
+    // Set matrix size
+    int M = atoi(argv[1]);
+    int N = atoi(argv[2]);
+    if (M <= 0 || N <= 0) return 0;
+    size_t bytes = M * N * sizeof(float);
 
+	float *h_A, *h_T;
+	float *d_A, *d_T;
+
+	// allocate host memory
+    gpuErrchk(cudaHostAlloc((void **)&h_A, bytes, cudaHostAllocMapped));
+    gpuErrchk(cudaHostAlloc((void **)&h_T, bytes, cudaHostAllocMapped));
+
+    
+	// initialize data
+	for (int i = 0; i < M * N; ++i) {
+        h_A[i] = (float)(rand() % 10 + 1);
+	}
+    
+
+    // allocate device memory
+    gpuErrchk(cudaMalloc(&d_A, bytes));
+    gpuErrchk(cudaMalloc(&d_T, bytes));
+    
+
+	// copy host data to device
+    double start_total_GPU = timeStamp();
+	gpuErrchk(cudaMemcpy(d_A, h_A, bytes, cudaMemcpyHostToDevice));
+
+    
+	// launch kernel instance
 	dim3 blockDim(BLOCK_DIM, BLOCK_DIM);
 	dim3 gridDim((N + blockDim.x - 1)/blockDim.x, (M + blockDim.y - 1)/blockDim.y);
-
-    double start, end;
-    start = timeStamp();
-    transposeCoalesced<<<gridDim, blockDim>>>(A_data, C_data, M, N);
-    // transpose<<<gridDim, blockDim>>>(A_data, C_data, M, N);
-    // transposeNaive<<<gridDim, blockDim>>>(A_data, C_data, M, N);
+	// transposeNaive<<<gridDim, blockDim>>>(d_A, d_T, M, N);
+	transposeCoalesced<<<gridDim, blockDim>>>(d_A, d_T, M, N);
+	// transpose<<<gridDim, blockDim>>>(d_A, d_T, M, N);
+    
     cudaDeviceSynchronize();
-    end = timeStamp();
+    gpuErrchk(cudaGetLastError());
 
-    printf("GPU execution time: %.4f milliseconds\n", (end-start));
 
-	return C;
+	// copy result back to host
+	gpuErrchk(cudaMemcpy(h_T, d_T, bytes, cudaMemcpyDeviceToHost));
+
+
+    double end_total_GPU = timeStamp();
+    float total_GPU_time = end_total_GPU - start_total_GPU;
+    printf("GPU execution time: %.4f milliseconds\n", total_GPU_time);
+
+  	// display results
+    displayResults(h_A, h_T, M, N);
+    validateResults(h_A, h_T, M, N);
+
+	// clean up data
+    gpuErrchk(cudaFreeHost(h_A));
+    gpuErrchk(cudaFreeHost(h_T));
+    gpuErrchk(cudaFree(d_A)); 
+    gpuErrchk(cudaFree(d_T));
+    gpuErrchk(cudaDeviceReset());
+
+	return 0;
 }
 
+// $ nvcc -arch sm_89 transpose_eunjin.cu -o transpose_eunjin
+// $ ./transpose_eunjin 5 4
 
-// % nvcc -arch sm_89 transpose.cu -o transpose
-// % transpose
+// $ nvcc -arch sm_89 transpose_cuda/transpose_eunjin.cu -o transpose_cuda/transpose_eunjin
+// $ transpose_cuda/transpose_eunjin 5 4
