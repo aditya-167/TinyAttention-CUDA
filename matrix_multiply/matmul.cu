@@ -576,7 +576,7 @@ __global__ void __launch_bounds__((BM * BN) / (TM * TN), 1)
   }
 }
 
-void run_sgemm_cublas(torch::Tensor A, torch::Tensor B, torch::Tensor C){
+void run_sgemm_cublas(torch::Tensor A, torch::Tensor B, torch::Tensor C, bool transpose){
 
     cudaError_t cudaStat;  // cudaMalloc status
     cublasStatus_t stat;   // cuBLAS functions status
@@ -595,15 +595,18 @@ void run_sgemm_cublas(torch::Tensor A, torch::Tensor B, torch::Tensor C){
             // compute the matrix multiplication
             // cublas expects A to be m x k, B to be k x n, and C to be m x n
             // BUT in col major layout
-
-            stat = cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_N, B.size(3), A.size(2), B.size(2), &alpha, Bij.data_ptr<float>(), B.size(3) , Aij.data_ptr<float>(), A.size(3), &beta, Cij.data_ptr<float>(),B.size(3));
+            if(transpose){
+                stat = cublasSgemm(handle, CUBLAS_OP_T, CUBLAS_OP_N, B.size(2), A.size(2), B.size(3), &alpha, Bij.data_ptr<float>(), B.size(3), Aij.data_ptr<float>(), A.size(3), &beta, Cij.data_ptr<float>(),B.size(2));
+            }
+            else{
+            stat = cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_N, B.size(3), A.size(2), B.size(2), &alpha, Bij.data_ptr<float>(), B.size(3), Aij.data_ptr<float>(), A.size(3), &beta, Cij.data_ptr<float>(),B.size(3));
             // allocate memory for output on GPU in cuda
+            }
         }
     }
 }
 
-
-void run_sgemm_cublas_batched(torch::Tensor A, torch::Tensor B, torch::Tensor C){
+void run_sgemm_cublas_batched(torch::Tensor A, torch::Tensor B, torch::Tensor C, bool transpose){
     cudaError_t cudaStat;  // cudaMalloc status
     cublasStatus_t stat;   // cuBLAS functions status
     cublasHandle_t handle;
@@ -639,19 +642,13 @@ void run_sgemm_cublas_batched(torch::Tensor A, torch::Tensor B, torch::Tensor C)
     cudaMemcpy(Aarray_d, Aarray, A.size(0)*A.size(1)*sizeof(float*), cudaMemcpyHostToDevice);
     cudaMemcpy(Barray_d, Barray, A.size(0)*A.size(1)*sizeof(float*), cudaMemcpyHostToDevice);
     cudaMemcpy(Carray_d, Carray, A.size(0)*A.size(1)*sizeof(float*), cudaMemcpyHostToDevice);
-    
-    stat = cublasSgemmBatched(handle, CUBLAS_OP_N, CUBLAS_OP_N, B.size(3), A.size(2), B.size(2), &alpha, Barray_d, B.size(3) , Aarray_d, B.size(2), &beta, Carray_d, B.size(3), B.size(0)*B.size(1));
-    // for (int i = 0; i < A.size(0); i++) {
-    //     for (int j = 0; j < A.size(1); j++) {
-    //         // get the i-th batch and j-th head
-    //         torch::Tensor Aij = A[i][j];
-    //         torch::Tensor Bij = B[i][j];
-    //         torch::Tensor Cij = C[i][j];
-    //         // compute the matrix multiplication
-    //         stat = cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_N, A.size(3), A.size(2), B.size(3), &alpha, Aij.data_ptr<float>(),A.size(3) , Bij.data_ptr<float>(), B.size(3), &beta, Cij.data_ptr<float>(),A.size(3));
-    //         // allocate memory for output on GPU in cuda
-    //     }
-    // }
+    if(transpose){
+      //stat = cublasSgemmBatched(handle, CUBLAS_OP_T, CUBLAS_OP_N, 3000, 3000, 4000, &alpha, Barray_d, 4000, Aarray_d, 4000, &beta, Carray_d, 3000, B.size(0)*B.size(1));
+      stat = cublasSgemmBatched(handle, CUBLAS_OP_T, CUBLAS_OP_N, B.size(2), A.size(2), B.size(3), &alpha, Barray_d, B.size(3) , Aarray_d, A.size(3), &beta, Carray_d, B.size(2), B.size(0)*B.size(1));
+    }
+    else{
+    stat = cublasSgemmBatched(handle, CUBLAS_OP_N, CUBLAS_OP_N, B.size(3), A.size(2), B.size(2), &alpha, Barray_d, B.size(3), Aarray_d, A.size(3), &beta, Carray_d, B.size(3), B.size(0)*B.size(1));
+    }
 }
 
 void run_sgemm_naive(torch::Tensor A, torch::Tensor B, torch::Tensor C){
@@ -767,10 +764,14 @@ void run_sgemm_blocktiling_batched(torch::Tensor A, torch::Tensor B, torch::Tens
 
 
 
-torch::Tensor forward(torch::Tensor A, torch::Tensor B) {
+torch::Tensor forward(torch::Tensor A, torch::Tensor B, bool transpose) {
     double start, end;
     start = getTimeStamp();
-    torch::Tensor C = torch::zeros({A.size(0), A.size(1), A.size(2), B.size(3)}, torch::kCUDA);
+    torch::Tensor C;
+    if (transpose){
+      C = torch::zeros({A.size(0), A.size(1), A.size(2), B.size(2)}, torch::kCUDA);
+    }
+    else {C = torch::zeros({A.size(0), A.size(1), A.size(2), B.size(3)}, torch::kCUDA);}
     
 
 
@@ -788,7 +789,7 @@ torch::Tensor forward(torch::Tensor A, torch::Tensor B) {
     // streaming not really beneficial probably as we dont have any data loading happening
     
     //run_sgemm_blocktiling_batched(A, B, C);
-    run_sgemm_cublas_batched(A, B, C);
+    run_sgemm_cublas(A, B, C, transpose);
     cudaDeviceSynchronize();
     end = getTimeStamp();
     printf("Time taken: %lf\n", (end-start));
