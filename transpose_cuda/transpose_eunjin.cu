@@ -103,19 +103,19 @@ __global__ void transposeSharedMem(float *d_A, float *d_T, int width, int height
     }
 }
 
-__global__ void transpose(float *d_A, float *d_T, int width, int height)
+__global__ void transpose(float *d_A, float *d_T, int M, int N)
 {
-	__shared__ float block[BLOCK_DIM][BLOCK_DIM];
+	__shared__ float block[BLOCK_DIM][BLOCK_DIM+1];
 	
 	// read the matrix tile into shared memory
     // load one element per thread from device memory (d_A) and store it
     // in transposed order in block[][]
-	unsigned int yIndex = blockIdx.x * BLOCK_DIM + threadIdx.x;
-	unsigned int xIndex = blockIdx.y * BLOCK_DIM + threadIdx.y;
+	unsigned int row = blockIdx.y * BLOCK_DIM + threadIdx.y;
+	unsigned int col = blockIdx.x * BLOCK_DIM + threadIdx.x;
 	
-    if((xIndex < width) && (yIndex < height))
+    if((row < M) && (col < N))
 	{
-		unsigned int index_in = yIndex * width + xIndex;
+		unsigned int index_in = row * N + col;
 		block[threadIdx.y][threadIdx.x] = d_A[index_in];
 	}
 
@@ -123,11 +123,11 @@ __global__ void transpose(float *d_A, float *d_T, int width, int height)
 	__syncthreads();
 
 	// write the transposed matrix tile to global memory (d_T) in linear order
-	xIndex = blockIdx.y * BLOCK_DIM + threadIdx.x;
-	yIndex = blockIdx.x * BLOCK_DIM + threadIdx.y;
-	if((xIndex < height) && (yIndex < width))
+	row = blockIdx.y * BLOCK_DIM + threadIdx.x;
+	col = blockIdx.x * BLOCK_DIM + threadIdx.y;
+	if((row < M) && (col < N))
 	{
-		unsigned int index_out = yIndex * height + xIndex;
+		unsigned int index_out = col * M + row;
 		d_T[index_out] = block[threadIdx.x][threadIdx.y];
 	}
 }
@@ -167,8 +167,8 @@ int main(int argc, char *argv[]) {
 	// launch kernel instance
 	dim3 blockDim(BLOCK_DIM, BLOCK_DIM);
 	dim3 gridDim((N + blockDim.x - 1)/blockDim.x, (M + blockDim.y - 1)/blockDim.y);
-	// transposeNaive<<<gridDim, blockDim>>>(d_A, d_T, M, N);
-	transpose<<<gridDim, blockDim>>>(d_A, d_T, M, N);
+	transposeNaive<<<gridDim, blockDim>>>(d_A, d_T, M, N);
+	// transpose<<<gridDim, blockDim>>>(d_A, d_T, M, N);
     
     cudaDeviceSynchronize();
     gpuErrchk(cudaGetLastError());
@@ -183,7 +183,7 @@ int main(int argc, char *argv[]) {
     printf("GPU execution time: %.4f milliseconds\n", total_GPU_time);
 
   	// display results
-    displayResults(h_A, h_T, M, N);
+    // displayResults(h_A, h_T, M, N);
     validateResults(h_A, h_T, M, N);
 
 	// clean up data

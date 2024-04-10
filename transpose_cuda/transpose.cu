@@ -114,29 +114,28 @@ __global__ void transposeCoalesced(float *odata, const float *idata)
      odata[(y+j)*width + x] = tile[threadIdx.x][threadIdx.y + j];
 }
 
-__global__ void transposeSharedMem( float *odata, float *idata, int width, int height ) {
-    __shared__ float block[ (BLOCK_DIM+1) * BLOCK_DIM ];
-    
-    int xBlock = blockDim.x * blockIdx.x;
-    int yBlock = blockDim.y * blockIdx.y;
-    int xIndex = xBlock + threadIdx.x;
-    int yIndex = yBlock + threadIdx.y;
-    int index_transpose;
-    int index_out;
-    
-    if( xIndex<width && yIndex<height ) {
-        int index_in = width*yIndex + xIndex;
-        int index_block = threadIdx.y * (BLOCK_DIM+1) + threadIdx.x;
-        index_transpose = threadIdx.x * (BLOCK_DIM+1) + threadIdx.y;
-        index_out = height * (xBlock+threadIdx.y) + yBlock + threadIdx.x;
+__global__ void transpose(float *d_A, float *d_T, int M, int N)
+{
+	__shared__ float block[BLOCK_DIM][BLOCK_DIM+1];
+	
+	unsigned int row = blockIdx.y * BLOCK_DIM + threadIdx.y;
+	unsigned int col = blockIdx.x * BLOCK_DIM + threadIdx.x;
+	
+    if((row < M) && (col < N))
+	{
+		unsigned int index_in = row * N + col;
+		block[threadIdx.y][threadIdx.x] = d_A[index_in];
+	}
 
-        block[index_block] = idata[index_in];
-    }
-    __syncthreads();
+	__syncthreads();
 
-    if( xIndex<width && yIndex<height ) {
-        odata[index_out] = block[index_transpose];
-    }
+	row = blockIdx.y * BLOCK_DIM + threadIdx.x;
+	col = blockIdx.x * BLOCK_DIM + threadIdx.y;
+	if((row < M) && (col < N))
+	{
+		unsigned int index_out = col * M + row;
+		d_T[index_out] = block[threadIdx.x][threadIdx.y];
+	}
 }
 
 torch::Tensor forward(torch::Tensor A) {
@@ -157,7 +156,8 @@ torch::Tensor forward(torch::Tensor A) {
 
     double start, end;
     start = timeStamp();
-    transposeNaive<<<gridDim, blockDim>>>(A_data, C_data, M, N);
+    transpose<<<gridDim, blockDim>>>(A_data, C_data, M, N);
+    // transposeNaive<<<gridDim, blockDim>>>(A_data, C_data, M, N);
     cudaDeviceSynchronize();
     end = timeStamp();
 
