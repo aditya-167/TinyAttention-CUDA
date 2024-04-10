@@ -12,8 +12,8 @@ batch_size = 1
 n_head = 1
 # seq_len = 4096
 # head_embd = 4096
-seq_len = 8
-head_embd = 4
+seq_len = 7 # M
+head_embd = 8 # N
 
 
 q = torch.rand(batch_size, n_head, seq_len, head_embd).cuda()

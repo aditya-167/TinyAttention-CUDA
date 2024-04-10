@@ -3,7 +3,7 @@
 #include <sys/time.h>
 
 #define TILE_DIM 32
-// #define BLOCK_ROWS 8
+#define BLOCK_ROWS 8
 #define BLOCK_DIM 16
 
 #define gpuErrchk(ans) { gpuAssert((ans), __FILE__, __LINE__); }
@@ -79,15 +79,16 @@ __global__ void transposeNaive(float *d_A, float *d_T, int M, int N) {
 	int row = blockIdx.y * BLOCK_DIM + threadIdx.y;
 	int col = blockIdx.x * BLOCK_DIM + threadIdx.x;
 
-	// swap elements via transpose
-	if (row < M && col < N) {
-		d_T[col * M + row] = d_A[row * N + col];
-	}
+	// if (row < M && col < N) {
+	// 	d_T[col * M + row] = d_A[row * N + col];
+	// }
+    for (int j = 0; j < TILE_DIM; j+= BLOCK_ROWS)
+    d_T[col*M + (row+j)] = d_A[(row+j)*N + col];
 }
 
 __global__ void transpose(float *d_A, float *d_T, int M, int N)
 {
-	__shared__ float block[TILE_DIM][TILE_DIM+1];
+	__shared__ float tile[TILE_DIM][TILE_DIM+1];
 	
 	unsigned int row = blockIdx.y * TILE_DIM + threadIdx.y;
 	unsigned int col = blockIdx.x * TILE_DIM + threadIdx.x;
@@ -96,7 +97,7 @@ __global__ void transpose(float *d_A, float *d_T, int M, int N)
 	
     if((row < M) && (col < N) && (index_in < M*N))
 	{
-		block[threadIdx.y][threadIdx.x] = d_A[index_in];
+		tile[threadIdx.y][threadIdx.x] = d_A[index_in];
 	}
 
 	__syncthreads();
@@ -105,7 +106,7 @@ __global__ void transpose(float *d_A, float *d_T, int M, int N)
 	col = blockIdx.x * TILE_DIM + threadIdx.y;
 	if((row < M) && (col < N) && (index_out < M*N))
 	{
-		d_T[index_out] = block[threadIdx.x][threadIdx.y];
+		d_T[index_out] = tile[threadIdx.x][threadIdx.y];
 	}
 }
 
@@ -144,7 +145,8 @@ int main(int argc, char *argv[]) {
 	// launch kernel instance
 	dim3 blockDim(BLOCK_DIM, BLOCK_DIM);
 	dim3 gridDim((N + blockDim.x - 1)/blockDim.x, (M + blockDim.y - 1)/blockDim.y);
-	transposeNaive<<<gridDim, blockDim>>>(d_A, d_T, M, N);
+	// transposeNaive<<<gridDim, blockDim>>>(d_A, d_T, M, N);
+	transposeCoalesced<<<gridDim, blockDim>>>(d_A, d_T, M, N);
 	// transpose<<<gridDim, blockDim>>>(d_A, d_T, M, N);
     
     cudaDeviceSynchronize();
@@ -160,7 +162,7 @@ int main(int argc, char *argv[]) {
     printf("GPU execution time: %.4f milliseconds\n", total_GPU_time);
 
   	// display results
-    // displayResults(h_A, h_T, M, N);
+    displayResults(h_A, h_T, M, N);
     validateResults(h_A, h_T, M, N);
 
 	// clean up data
@@ -174,7 +176,7 @@ int main(int argc, char *argv[]) {
 }
 
 // $ nvcc -arch sm_89 transpose_eunjin.cu -o transpose_eunjin
-// $ transpose 5 4
+// $ ./transpose_eunjin 5 4
 
 // $ nvcc -arch sm_89 transpose_cuda/transpose_eunjin.cu -o transpose_cuda/transpose_eunjin
 // $ transpose_cuda/transpose_eunjin 5 4
