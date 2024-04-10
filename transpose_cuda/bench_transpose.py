@@ -10,8 +10,10 @@ minimal_transpose = load(name='transpose', sources=['main.cpp', 'transpose.cu'],
 # Use small model params, otherwise slower than manual attention. See caveats in README.
 batch_size = 1
 n_head = 1
-seq_len = 4096
-head_embd = 4096
+# seq_len = 4096
+# head_embd = 4096
+seq_len = 8
+head_embd = 4
 
 
 q = torch.rand(batch_size, n_head, seq_len, head_embd).cuda()
@@ -34,4 +36,4 @@ print(prof.key_averages().table(sort_by='cuda_time_total', row_limit=10))
 print(minimal_transpose.cpu())
 print(manual_result.cpu())
 
-print('attn values sanity check:', torch.allclose(minimal_transpose, manual_result, rtol=0, atol=1e-02))
+print('value sanity check:', torch.allclose(minimal_transpose, manual_result, rtol=0, atol=1e-02))

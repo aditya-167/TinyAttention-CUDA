@@ -12,7 +12,7 @@
 
 #define TILE_DIM 32
 #define BLOCK_ROWS 8
-#define BLOCK_DIM 16
+#define BLOCK_DIM 8
 // const int NUM_REPS = 100;
 
 #define gpuErrchk(ans) { gpuAssert((ans), __FILE__, __LINE__); }
@@ -94,36 +94,16 @@ __global__ void transposeNaive(float *d_A, float *d_T, int M, int N) {
 	}
 }
 
-__global__ void transposeCoalesced(float *odata, const float *idata)
-{
-  __shared__ float tile[TILE_DIM][TILE_DIM];
-    
-  int x = blockIdx.x * TILE_DIM + threadIdx.x;
-  int y = blockIdx.y * TILE_DIM + threadIdx.y;
-  int width = gridDim.x * TILE_DIM;
-
-  for (int j = 0; j < TILE_DIM; j += BLOCK_ROWS)
-     tile[threadIdx.y+j][threadIdx.x] = idata[(y+j)*width + x];
-
-  __syncthreads();
-
-  x = blockIdx.y * TILE_DIM + threadIdx.x;  // transpose block offset
-  y = blockIdx.x * TILE_DIM + threadIdx.y;
-
-  for (int j = 0; j < TILE_DIM; j += BLOCK_ROWS)
-     odata[(y+j)*width + x] = tile[threadIdx.x][threadIdx.y + j];
-}
-
 __global__ void transpose(float *d_A, float *d_T, int M, int N)
 {
 	__shared__ float block[BLOCK_DIM][BLOCK_DIM+1];
 	
 	unsigned int row = blockIdx.y * BLOCK_DIM + threadIdx.y;
 	unsigned int col = blockIdx.x * BLOCK_DIM + threadIdx.x;
+    unsigned int index_in = row * N + col;
+    unsigned int index_out = col * M + row;
 	
-    if((row < M) && (col < N))
-	{
-		unsigned int index_in = row * N + col;
+    if((row < M) && (col < N) && (index_in < M*N)) {
 		block[threadIdx.y][threadIdx.x] = d_A[index_in];
 	}
 
@@ -131,9 +111,7 @@ __global__ void transpose(float *d_A, float *d_T, int M, int N)
 
 	row = blockIdx.y * BLOCK_DIM + threadIdx.x;
 	col = blockIdx.x * BLOCK_DIM + threadIdx.y;
-	if((row < M) && (col < N))
-	{
-		unsigned int index_out = col * M + row;
+	if((row < M) && (col < N) && (index_out < M*N)) {
 		d_T[index_out] = block[threadIdx.x][threadIdx.y];
 	}
 }
@@ -141,7 +119,6 @@ __global__ void transpose(float *d_A, float *d_T, int M, int N)
 torch::Tensor forward(torch::Tensor A) {
     // A and B are 4D tensors in row major format: 
     // A = (batchsize, head, M, K)
-    // Set matrix size
     const int M = A.size(2);
     const int N = A.size(3);
 
@@ -149,9 +126,8 @@ torch::Tensor forward(torch::Tensor A) {
     torch::Tensor C = torch::zeros({A.size(0), A.size(1), N, M}, A.options().device(torch::kCUDA));
     auto A_data = A.data_ptr<float>();
     auto C_data = C.data_ptr<float>();
-    int blockSize = 32;
 
-	dim3 blockDim(blockSize, blockSize);
+	dim3 blockDim(BLOCK_DIM, BLOCK_DIM);
 	dim3 gridDim((N + blockDim.x - 1)/blockDim.x, (M + blockDim.y - 1)/blockDim.y);
 
     double start, end;

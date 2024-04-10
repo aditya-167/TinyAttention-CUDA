@@ -2,10 +2,8 @@
 #include <stdlib.h>
 #include <sys/time.h>
 
-// #define TILE_DIM 32
 #define BLOCK_ROWS 8
 #define BLOCK_DIM 16
-// const int NUM_REPS = 100;
 
 #define gpuErrchk(ans) { gpuAssert((ans), __FILE__, __LINE__); }
 inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=true) {
@@ -86,48 +84,26 @@ __global__ void transposeNaive(float *d_A, float *d_T, int M, int N) {
 	}
 }
 
-__global__ void transposeSharedMem(float *d_A, float *d_T, int width, int height ) {
-    __shared__ float tile[BLOCK_DIM * BLOCK_DIM];
-
-    int x = blockIdx.x * BLOCK_DIM + threadIdx.x;
-    int y = blockIdx.y * BLOCK_DIM + threadIdx.y;
-    // int width = gridDim.x * BLOCK_DIM;
-
-    for (int j = 0; j < BLOCK_DIM; j += BLOCK_ROWS)
-        tile[(threadIdx.y+j)*BLOCK_DIM + threadIdx.x] = d_A[(y+j)*width + x];
-
-    __syncthreads();
-
-    for (int j = 0; j < BLOCK_DIM; j += BLOCK_ROWS) {
-        d_T[(y+j)*width + x] = tile[(threadIdx.y+j)*BLOCK_DIM + threadIdx.x];        
-    }
-}
-
 __global__ void transpose(float *d_A, float *d_T, int M, int N)
 {
 	__shared__ float block[BLOCK_DIM][BLOCK_DIM+1];
 	
-	// read the matrix tile into shared memory
-    // load one element per thread from device memory (d_A) and store it
-    // in transposed order in block[][]
 	unsigned int row = blockIdx.y * BLOCK_DIM + threadIdx.y;
 	unsigned int col = blockIdx.x * BLOCK_DIM + threadIdx.x;
+    unsigned int index_in = row * N + col;
+    unsigned int index_out = col * M + row;
 	
-    if((row < M) && (col < N))
+    if((row < M) && (col < N) && (index_in < M*N))
 	{
-		unsigned int index_in = row * N + col;
 		block[threadIdx.y][threadIdx.x] = d_A[index_in];
 	}
 
-    // synchronise to ensure all writes to block[][] have completed
 	__syncthreads();
 
-	// write the transposed matrix tile to global memory (d_T) in linear order
 	row = blockIdx.y * BLOCK_DIM + threadIdx.x;
 	col = blockIdx.x * BLOCK_DIM + threadIdx.y;
-	if((row < M) && (col < N))
+	if((row < M) && (col < N) && (index_out < M*N))
 	{
-		unsigned int index_out = col * M + row;
 		d_T[index_out] = block[threadIdx.x][threadIdx.y];
 	}
 }
