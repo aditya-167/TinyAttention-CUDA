@@ -115,45 +115,28 @@ __global__ void transposeCoalesced(float *odata, const float *idata)
 }
 
 __global__ void transposeSharedMem( float *odata, float *idata, int width, int height ) {
-// __global__ void copySharedMem(float *odata, const float *idata){
-    __shared__ float tile[TILE_DIM * TILE_DIM];
+    __shared__ float block[ (BLOCK_DIM+1) * BLOCK_DIM ];
+    
+    int xBlock = blockDim.x * blockIdx.x;
+    int yBlock = blockDim.y * blockIdx.y;
+    int xIndex = xBlock + threadIdx.x;
+    int yIndex = yBlock + threadIdx.y;
+    int index_transpose;
+    int index_out;
+    
+    if( xIndex<width && yIndex<height ) {
+        int index_in = width*yIndex + xIndex;
+        int index_block = threadIdx.y * (BLOCK_DIM+1) + threadIdx.x;
+        index_transpose = threadIdx.x * (BLOCK_DIM+1) + threadIdx.y;
+        index_out = height * (xBlock+threadIdx.y) + yBlock + threadIdx.x;
 
-    int x = blockIdx.x * TILE_DIM + threadIdx.x;
-    int y = blockIdx.y * TILE_DIM + threadIdx.y;
-    int width = gridDim.x * TILE_DIM;
-
-    for (int j = 0; j < TILE_DIM; j += BLOCK_ROWS)
-        tile[(threadIdx.y+j)*TILE_DIM + threadIdx.x] = idata[(y+j)*width + x];
-
+        block[index_block] = idata[index_in];
+    }
     __syncthreads();
 
-    for (int j = 0; j < TILE_DIM; j += BLOCK_ROWS)
-        odata[(y+j)*width + x] = tile[(threadIdx.y+j)*TILE_DIM + threadIdx.x];          
+    if( xIndex<width && yIndex<height ) {
+        odata[index_out] = block[index_transpose];
     }
-
-    //---------------------------
-    // __shared__ float block[ (BLOCK_DIM+1) * BLOCK_DIM ];
-    
-    // int xBlock = blockDim.x * blockIdx.x;
-    // int yBlock = blockDim.y * blockIdx.y;
-    // int xIndex = xBlock + threadIdx.x;
-    // int yIndex = yBlock + threadIdx.y;
-    // int index_transpose;
-    // int index_out;
-    
-    // if( xIndex<width && yIndex<height ) {
-    //     int index_in = width*yIndex + xIndex;
-    //     int index_block = threadIdx.y * (BLOCK_DIM+1) + threadIdx.x;
-    //     index_transpose = threadIdx.x * (BLOCK_DIM+1) + threadIdx.y;
-    //     index_out = height * (xBlock+threadIdx.y) + yBlock + threadIdx.x;
-
-    //     block[index_block] = idata[index_in];
-    // }
-    // __syncthreads();
-
-    // if( xIndex<width && yIndex<height ) {
-    //     odata[index_out] = block[index_transpose];
-    // }
 }
 
 torch::Tensor forward(torch::Tensor A) {
