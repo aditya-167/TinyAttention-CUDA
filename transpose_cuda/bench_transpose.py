@@ -32,11 +32,11 @@ manual_result = manual_transpose(q)
 print('=== profiling minimal transpose === ')
 
 # with torch.autograd.profiler.profile(use_cuda=True) as prof:
-    # minimal_transpose = minimal_transpose.forward(q)
-# print(prof.key_averages().table(sort_by='cuda_time_total', row_limit=10))
-# print(minimal_transpose)
-# print(manual_result.cpu())
 minimal_transpose = minimal_transpose.forward(q)
+# print(prof.key_averages().table(sort_by='cuda_time_total', row_limit=10))
+print(minimal_transpose)
+print(manual_result.cpu())
+#minimal_transpose = minimal_transpose.forward(q)
 
 
 print('value sanity check:', torch.allclose(minimal_transpose, manual_result, rtol=0, atol=1e-02))
