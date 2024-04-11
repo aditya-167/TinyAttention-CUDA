@@ -12,7 +12,7 @@
 
 #define TILE_DIM 32
 #define BLOCK_ROWS 8
-#define BLOCK_DIM 16
+#define BLOCK_DIM 32
 // const int NUM_REPS = 100;
 
 #define gpuErrchk(ans) { gpuAssert((ans), __FILE__, __LINE__); }
@@ -115,25 +115,133 @@ __global__ void transpose(float *d_A, float *d_T, int M, int N) {
 	}
 }
 
+__global__ void copySharedMem(float *idata, float *odata, int M, int N)
+{
+  __shared__ float tile[TILE_DIM * TILE_DIM];
+    // block is 8 x 32 so x is 8 and y is 32
+  int x = blockIdx.x * TILE_DIM + threadIdx.x*4; // 0,4,8,12,16,20,24,28
+  int y = blockIdx.y * TILE_DIM + threadIdx.y; // 0,1,2,3,...,31
+    //   printf("%d",blockIdx.y);
+    //   printf("%d",blockIdx.x);
+  int width = gridDim.x * TILE_DIM;
+
+    if (x>=64 || y>=64){return;}
+    // load all your elements into shared memory
+    for (int j=0; j<4;j+=1){
+        tile[threadIdx.y*TILE_DIM+threadIdx.x*4+j]=idata[y*N+x+j]; //thread 0: 0,1,2,3, thread 1: 4,5,6,7 ... ,28,29,30,31, loading is done with offset
+    }
+    
+    __syncthreads();
+  // shared memory now contain an exact copy of the tile. We need to load this back coalesced now
+
+    // calculate the elelements that this thread will load back and to where it will load back
+    //idx=(threadIdx.x*BLOCK_ROWS+j)*TILE_DIM
+    int idy = threadIdx.y;
+    int idx;
+
+    for (int j = 0; j < 4; j += 1){
+        idx=(threadIdx.x*4+j); // 
+        odata[blockIdx.x*TILE_DIM*N + blockIdx.y*TILE_DIM + idy*M + idx]=tile[idx*TILE_DIM+idy];
+    }}
+
+
+
+__global__ void copySharedMem_coalesced(float *idata, float *odata, int M, int N)
+{
+  __shared__ float tile[TILE_DIM * TILE_DIM];
+    // block is 8 x 32 so x is 8 and y is 32
+    int x = blockIdx.x * TILE_DIM + threadIdx.x; // 0,4,8,12,16,20,24,28
+    int y = blockIdx.y * TILE_DIM + threadIdx.y*4; // 0,1,2,3,...,31
+    //   printf("%d",blockIdx.y);
+    //   printf("%d",blockIdx.x);
+    int width = gridDim.x * TILE_DIM;
+
+    if (x>=N || y>=M){return;}
+    // load all your elements into shared memory
+    for (int j=0; j<4;j+=1){
+        tile[(threadIdx.y*4+j)*TILE_DIM+threadIdx.x]=idata[(y+j)*N+x]; //thread 0: 0,1,2,3, thread 1: 4,5,6,7 ... ,28,29,30,31, loading is done with offset
+    }
+    
+    __syncthreads();
+  // shared memory now contain an exact copy of the tile. We need to load this back coalesced now
+
+    // calculate the elelements that this thread will load back and to where it will load back
+    //idx=(threadIdx.x*BLOCK_ROWS+j)*TILE_DIM
+    int idy;
+    int idx=threadIdx.x;
+
+    for (int j = 0; j < 4; j += 1){
+        idy=(threadIdx.y*4+j); // 
+        odata[blockIdx.x*TILE_DIM*N + blockIdx.y*TILE_DIM + idy*M + idx]=tile[idx*TILE_DIM+idy];
+    }
+
+
+//     int idxs_in_shared_0_0 = threadIdx.x,threadIdx.x+TILE_DIM,..., threadIdx.x+TILE_DIM*4
+//     int idxs_in_shared_0_1 = threadidx.x
+//     int targets = y*N+
+
+
+
+
+//   for (int j = 0; j < TILE_DIM; j += BLOCK_ROWS)
+//   // each thread now loads 4 cosnecutive elements into shared memory
+//      tile[(threadIdx.y+j)*TILE_DIM + threadIdx.x] = idata[(y+j)*width + x];
+
+//   __syncthreads();
+
+//   for (int j = 0; j < TILE_DIM; j += BLOCK_ROWS)
+//      odata[(y+j)*width + x] = tile[(threadIdx.y+j)*TILE_DIM + threadIdx.x];          
+}
+
+// torch::Tensor forward(torch::Tensor A) {
+//     // A and B are 4D tensors in row major format:
+//     // A = (batchsize, head, M, K)
+//     const int M = A.size(2);
+//     const int N = A.size(3);
+
+//     // Initialize A, Z to host memory
+//     torch::Tensor C = torch::zeros({A.size(0), A.size(1), N, M}, A.options().device(torch::kCUDA));
+//     auto A_data = A.data_ptr<float>();
+//     auto C_data = C.data_ptr<float>();
+
+// 	dim3 blockDim(BLOCK_DIM, BLOCK_DIM);
+// 	dim3 gridDim((N + blockDim.x - 1)/blockDim.x, (M + blockDim.y - 1)/blockDim.y);
+
+//     double start, end;
+//     start = timeStamp();
+//     //transposeCoalesced<<<gridDim, blockDim>>>(A_data, C_data, M, N);
+//     // transpose<<<gridDim, blockDim>>>(A_data, C_data, M, N);
+//     transposeNaive<<<gridDim, blockDim>>>(A_data, C_data, M, N);
+//     cudaDeviceSynchronize();
+//     end = timeStamp();
+
+//     printf("GPU execution time: %.4f milliseconds\n", (end-start));
+
+// 	return C;
+// }
+
+
 torch::Tensor forward(torch::Tensor A) {
     // A and B are 4D tensors in row major format:
     // A = (batchsize, head, M, K)
     const int M = A.size(2);
     const int N = A.size(3);
 
-    // Initialize A, Z to host memory
+    // Initialize A, Z to host memory, A is MxN and C is NxM. Thus x should be 
     torch::Tensor C = torch::zeros({A.size(0), A.size(1), N, M}, A.options().device(torch::kCUDA));
     auto A_data = A.data_ptr<float>();
     auto C_data = C.data_ptr<float>();
 
-	dim3 blockDim(BLOCK_DIM, BLOCK_DIM);
-	dim3 gridDim((N + blockDim.x - 1)/blockDim.x, (M + blockDim.y - 1)/blockDim.y);
+	dim3 blockDim(32, 8); // each thread will process 4 cosnecutive 
+	dim3 gridDim((N + 32 - 1)/32, (M + 32 - 1)/32);
+    // dim3 blockDim(BLOCK_DIM, BLOCK_DIM); // each thread will process 4 cosnecutive 
+	// dim3 gridDim((N + BLOCK_DIM - 1)/BLOCK_DIM, (M + BLOCK_DIM - 1)/BLOCK_DIM);
 
     double start, end;
     start = timeStamp();
-    transposeCoalesced<<<gridDim, blockDim>>>(A_data, C_data, M, N);
-    // transpose<<<gridDim, blockDim>>>(A_data, C_data, M, N);
-    // transposeNaive<<<gridDim, blockDim>>>(A_data, C_data, M, N);
+    //transposeCoalesced<<<gridDim, blockDim>>>(A_data, C_data, M, N);
+    //transposeNaive<<<gridDim, blockDim>>>(A_data, C_data, M, N);
+    copySharedMem_coalesced<<<gridDim, blockDim>>>(A_data, C_data, M, N);
     cudaDeviceSynchronize();
     end = timeStamp();
 
