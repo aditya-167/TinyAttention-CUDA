@@ -4,7 +4,7 @@
 
 #define TILE_DIM 32
 #define BLOCK_ROWS 8
-#define BLOCK_DIM 16
+#define BLOCK_DIM 32
 
 #define gpuErrchk(ans) { gpuAssert((ans), __FILE__, __LINE__); }
 inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=true) {
@@ -19,14 +19,22 @@ double timeStamp() {
     return tv.tv_usec / 1000.0 + tv.tv_sec;
 }
 
-void displayResults(float *A, float *T, int M, int N){
+void displayResults(float *A, float *T, int M, int N, int fromIdx, int toIdx){
     // display results
 	printf("Matrix A: \n");
 	printf("----------\n");
 	for (int i = 0; i < M; ++i) {
-		for (int j = 0; j < N; ++j) {
-			printf("A: %f ", A[i * N + j]);
-		}
+        if (i >= fromIdx && i < toIdx) {
+            for (int j = 0; j < N; ++j) {
+                if (j >= fromIdx && j < toIdx) {
+                    printf("A: %.2f ", A[i * N + j]);
+                } else {
+                    continue;
+                }
+            }
+        } else {
+            continue;
+        }
 		printf("\n");
 	}
 
@@ -34,9 +42,17 @@ void displayResults(float *A, float *T, int M, int N){
 	printf("Transpose: \n");
 	printf("----------\n");
 	for (int i = 0; i < N; ++i) {
-		for (int j = 0; j < M; ++j) {
-			printf("%f ", T[i * M + j]);
-		}
+        if (i >= fromIdx && i < toIdx) {
+            for (int j = 0; j < M; ++j) {
+                if (j >= fromIdx && j < toIdx) {
+                    printf("%.2f ", T[i * M + j]);
+                } else {
+                    continue;
+                }
+            }
+        } else {
+            continue;
+        }
 		printf("\n");
 	}
 }
@@ -84,16 +100,14 @@ __global__ void transposeNaive(float *d_A, float *d_T, int M, int N) {
 	}
 }
 
-__global__ void transposeSharedMem(float *d_A, float *d_T, int M, int N)
-{
+__global__ void transposeSharedMem(float *d_A, float *d_T, int M, int N) {
 	__shared__ float tile[TILE_DIM][TILE_DIM+1];
 	
 	unsigned int row = blockIdx.y * TILE_DIM + threadIdx.y;
 	unsigned int col = blockIdx.x * TILE_DIM + threadIdx.x;
     unsigned int index_in = row * N + col;
 	
-    if((row < M) && (col < N) && (index_in < M*N))
-	{
+    if((row < M) && (col < N) && (index_in < M*N)) {
         tile[threadIdx.y][threadIdx.x] = d_A[index_in];
 	}
     
@@ -101,8 +115,7 @@ __global__ void transposeSharedMem(float *d_A, float *d_T, int M, int N)
     
 	row = blockIdx.y * TILE_DIM + threadIdx.x;
 	col = blockIdx.x * TILE_DIM + threadIdx.y;
-	if((row < M) && (col < N))
-	{
+	if((row < M) && (col < N)) {
         unsigned int index_out = col * M + row;
 		d_T[index_out] = tile[threadIdx.x][threadIdx.y];
 	}
@@ -159,7 +172,7 @@ int main(int argc, char *argv[]) {
     printf("GPU execution time: %.4f milliseconds\n", total_GPU_time);
 
   	// display results
-    displayResults(h_A, h_T, M, N);
+    // displayResults(h_A, h_T, M, N, 30, 40);
     validateResults(h_A, h_T, M, N);
 
 	// clean up data
