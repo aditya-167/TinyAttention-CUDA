@@ -13,10 +13,7 @@
 #define TILE_DIM 32
 #define BLOCK_ROWS 8
 #define BLOCK_DIM 32
-<<<<<<< HEAD
 // const int NUM_REPS = 100;
-=======
->>>>>>> f10d30031077835e037e09a478e04750cf0293d2
 
 #define gpuErrchk(ans) { gpuAssert((ans), __FILE__, __LINE__); }
 inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=true) {
@@ -166,7 +163,7 @@ __global__ void copySharedMem_coalesced(float *idata, float *odata, int M, int N
     }
     
     __syncthreads();
-  // shared memory now contain an exact copy of the tile. We need to load this back coalesced now
+    // shared memory now contain an exact copy of the tile. We need to load this back coalesced now
 
     // calculate the elelements that this thread will load back and to where it will load back
     //idx=(threadIdx.x*BLOCK_ROWS+j)*TILE_DIM
@@ -177,60 +174,55 @@ __global__ void copySharedMem_coalesced(float *idata, float *odata, int M, int N
         idy=(threadIdx.y+j); // 
         odata[blockIdx.x*TILE_DIM*N + blockIdx.y*TILE_DIM + idy*M + idx]=tile[idx*TILE_DIM+idy];
     }
-
-
-//     int idxs_in_shared_0_0 = threadIdx.x,threadIdx.x+TILE_DIM,..., threadIdx.x+TILE_DIM*4
-//     int idxs_in_shared_0_1 = threadidx.x
-//     int targets = y*N+
-
-
-
-
-//   for (int j = 0; j < TILE_DIM; j += BLOCK_ROWS)
-//   // each thread now loads 4 cosnecutive elements into shared memory
-//      tile[(threadIdx.y+j)*TILE_DIM + threadIdx.x] = idata[(y+j)*width + x];
-
-//   __syncthreads();
-
-//   for (int j = 0; j < TILE_DIM; j += BLOCK_ROWS)
-//      odata[(y+j)*width + x] = tile[(threadIdx.y+j)*TILE_DIM + threadIdx.x];          
 }
 
-// torch::Tensor forward(torch::Tensor A) {
-//     // A and B are 4D tensors in row major format:
-//     // A = (batchsize, head, M, K)
-//     const int M = A.size(2);
-//     const int N = A.size(3);
+void run_transpose_cublas(torch::Tensor A, torch::Tensor C) {
+    cudaError_t cudaStat;  // cudaMalloc status
+    cublasStatus_t stat;  // cuBLAS functions status
+    cublasHandle_t handle;
+    stat = cublasCreate(&handle);
 
-//     // Initialize A, Z to host memory
-//     torch::Tensor C = torch::zeros({A.size(0), A.size(1), N, M}, A.options().device(torch::kCUDA));
-//     auto A_data = A.data_ptr<float>();
-//     auto C_data = C.data_ptr<float>();
+    const float alpha = 1.0;
+    const float beta = 0.0;
 
-// 	dim3 blockDim(BLOCK_DIM, BLOCK_DIM);
-// 	dim3 gridDim((N + blockDim.x - 1)/blockDim.x, (M + blockDim.y - 1)/blockDim.y);
+    // loop over batchsize and head
+    for (int i = 0; i < A.size(0); i++) {
+        for (int j = 0; j < A.size(1); j++) {
+            // get the i-th batch and j-th head
+            torch::Tensor Aij = A[i][j];
+            torch::Tensor Cij = C[i][j];
 
-//     double start, end;
-//     start = timeStamp();
-//     //transposeCoalesced<<<gridDim, blockDim>>>(A_data, C_data, M, N);
-//     // transpose<<<gridDim, blockDim>>>(A_data, C_data, M, N);
-//     transposeNaive<<<gridDim, blockDim>>>(A_data, C_data, M, N);
-//     cudaDeviceSynchronize();
-//     end = timeStamp();
+            // perform matrix transposition using cublasSgeam
+            stat = cublasSgeam(handle,
+                               CUBLAS_OP_T,  // transpose A
+                               CUBLAS_OP_N,  // do not transpose B (NULL)
+                               Aij.size(1),  // number of rows of A^T
+                               Aij.size(0),  // number of columns of A^T
+                               &alpha,
+                               Aij.data_ptr<float>(),  // pointer to A
+                               Aij.size(1),  // leading dimension of A
+                               &beta,
+                               NULL,  // B is NULL
+                               Aij.size(1),  // set ldb to a valid value
+                               Cij.data_ptr<float>(),  // pointer to C
+                               Aij.size(1));  // leading dimension of C
+        }
+    }
 
-//     printf("GPU execution time: %.4f milliseconds\n", (end-start));
-
-// 	return C;
-// }
-
+    cublasDestroy(handle);
+}
 
 torch::Tensor forward(torch::Tensor A) {
     // A and B are 4D tensors in row major format:
     // A = (batchsize, head, M, K)
+    double start, end;
+    start = timeStamp();
     const int M = A.size(2);
     const int N = A.size(3);
 
     // Initialize A, Z to host memory, A is MxN and C is NxM. Thus x should be 
+
+    
     torch::Tensor C = torch::zeros({A.size(0), A.size(1), N, M}, A.options().device(torch::kCUDA));
     auto A_data = A.data_ptr<float>();
     auto C_data = C.data_ptr<float>();
@@ -240,11 +232,11 @@ torch::Tensor forward(torch::Tensor A) {
     // dim3 blockDim(BLOCK_DIM, BLOCK_DIM); // each thread will process 4 cosnecutive 
 	// dim3 gridDim((N + BLOCK_DIM - 1)/BLOCK_DIM, (M + BLOCK_DIM - 1)/BLOCK_DIM);
 
-    double start, end;
-    start = timeStamp();
+   
     //transposeCoalesced<<<gridDim, blockDim>>>(A_data, C_data, M, N);
-    //transposeNaive<<<gridDim, blockDim>>>(A_data, C_data, M, N);
-    copySharedMem_coalesced<<<gridDim, blockDim>>>(A_data, C_data, M, N);
+    //transposeSharedMem<<<gridDim, blockDim>>>(A_data, C_data, M, N);
+    // copySharedMem_coalesced<<<gridDim, blockDim>>>(A_data, C_data, M, N);
+    run_transpose_cublas(A, C);
     cudaDeviceSynchronize();
     end = timeStamp();
 
