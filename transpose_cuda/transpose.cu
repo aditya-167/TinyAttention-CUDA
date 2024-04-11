@@ -12,8 +12,7 @@
 
 #define TILE_DIM 32
 #define BLOCK_ROWS 8
-#define BLOCK_DIM 16
-// const int NUM_REPS = 100;
+#define BLOCK_DIM 32
 
 #define gpuErrchk(ans) { gpuAssert((ans), __FILE__, __LINE__); }
 inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=true) {
@@ -94,23 +93,23 @@ __global__ void transposeNaive(float *d_A, float *d_T, int M, int N) {
 	}
 }
 
-__global__ void transpose(float *d_A, float *d_T, int M, int N) {
+__global__ void transposeSharedMem(float *d_A, float *d_T, int M, int N) {
 	__shared__ float tile[TILE_DIM][TILE_DIM+1];
 	
 	unsigned int row = blockIdx.y * TILE_DIM + threadIdx.y;
 	unsigned int col = blockIdx.x * TILE_DIM + threadIdx.x;
     unsigned int index_in = row * N + col;
-    unsigned int index_out = col * M + row;
 	
     if((row < M) && (col < N) && (index_in < M*N)) {
-		tile[threadIdx.y][threadIdx.x] = d_A[index_in];
+        tile[threadIdx.y][threadIdx.x] = d_A[index_in];
 	}
-
+    
 	__syncthreads();
-
+    
 	row = blockIdx.y * TILE_DIM + threadIdx.x;
 	col = blockIdx.x * TILE_DIM + threadIdx.y;
-	if((row < M) && (col < N) && (index_out < M*N)) {
+	if((row < M) && (col < N)) {
+        unsigned int index_out = col * M + row;
 		d_T[index_out] = tile[threadIdx.x][threadIdx.y];
 	}
 }
@@ -131,8 +130,7 @@ torch::Tensor forward(torch::Tensor A) {
 
     double start, end;
     start = timeStamp();
-    transposeCoalesced<<<gridDim, blockDim>>>(A_data, C_data, M, N);
-    // transpose<<<gridDim, blockDim>>>(A_data, C_data, M, N);
+    transposeSharedMem<<<gridDim, blockDim>>>(A_data, C_data, M, N);
     // transposeNaive<<<gridDim, blockDim>>>(A_data, C_data, M, N);
     cudaDeviceSynchronize();
     end = timeStamp();
