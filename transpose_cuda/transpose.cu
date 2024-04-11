@@ -13,7 +13,6 @@
 #define TILE_DIM 32
 #define BLOCK_ROWS 8
 #define BLOCK_DIM 16
-// const int NUM_REPS = 100;
 
 #define gpuErrchk(ans) { gpuAssert((ans), __FILE__, __LINE__); }
 inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=true) {

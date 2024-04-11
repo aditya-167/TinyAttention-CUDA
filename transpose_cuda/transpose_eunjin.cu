@@ -79,33 +79,31 @@ __global__ void transposeNaive(float *d_A, float *d_T, int M, int N) {
 	int row = blockIdx.y * BLOCK_DIM + threadIdx.y;
 	int col = blockIdx.x * BLOCK_DIM + threadIdx.x;
 
-	// if (row < M && col < N) {
-	// 	d_T[col * M + row] = d_A[row * N + col];
-	// }
-    for (int j = 0; j < TILE_DIM; j+= BLOCK_ROWS)
-    d_T[col*M + (row+j)] = d_A[(row+j)*N + col];
+	if (row < M && col < N) {
+		d_T[col * M + row] = d_A[row * N + col];
+	}
 }
 
-__global__ void transpose(float *d_A, float *d_T, int M, int N)
+__global__ void transposeSharedMem(float *d_A, float *d_T, int M, int N)
 {
 	__shared__ float tile[TILE_DIM][TILE_DIM+1];
 	
 	unsigned int row = blockIdx.y * TILE_DIM + threadIdx.y;
 	unsigned int col = blockIdx.x * TILE_DIM + threadIdx.x;
     unsigned int index_in = row * N + col;
-    unsigned int index_out = col * M + row;
 	
     if((row < M) && (col < N) && (index_in < M*N))
 	{
-		tile[threadIdx.y][threadIdx.x] = d_A[index_in];
+        tile[threadIdx.y][threadIdx.x] = d_A[index_in];
 	}
-
+    
 	__syncthreads();
-
+    
 	row = blockIdx.y * TILE_DIM + threadIdx.x;
 	col = blockIdx.x * TILE_DIM + threadIdx.y;
-	if((row < M) && (col < N) && (index_out < M*N))
+	if((row < M) && (col < N))
 	{
+        unsigned int index_out = col * M + row;
 		d_T[index_out] = tile[threadIdx.x][threadIdx.y];
 	}
 }
@@ -146,8 +144,7 @@ int main(int argc, char *argv[]) {
 	dim3 blockDim(BLOCK_DIM, BLOCK_DIM);
 	dim3 gridDim((N + blockDim.x - 1)/blockDim.x, (M + blockDim.y - 1)/blockDim.y);
 	// transposeNaive<<<gridDim, blockDim>>>(d_A, d_T, M, N);
-	transposeCoalesced<<<gridDim, blockDim>>>(d_A, d_T, M, N);
-	// transpose<<<gridDim, blockDim>>>(d_A, d_T, M, N);
+	transposeSharedMem<<<gridDim, blockDim>>>(d_A, d_T, M, N);
     
     cudaDeviceSynchronize();
     gpuErrchk(cudaGetLastError());
