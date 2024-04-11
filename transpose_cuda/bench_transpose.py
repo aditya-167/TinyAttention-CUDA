@@ -10,8 +10,8 @@ minimal_transpose = load(name='transpose', sources=['main.cpp', 'transpose.cu'],
 # Use small model params, otherwise slower than manual attention. See caveats in README.
 batch_size = 1
 n_head = 1
-seq_len = 64
-head_embd = 32
+seq_len = 4000
+head_embd = 4000
 # seq_len = 64 # M
 # head_embd = 64 # N
 

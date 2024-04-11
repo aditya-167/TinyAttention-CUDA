@@ -125,7 +125,7 @@ __global__ void copySharedMem(float *idata, float *odata, int M, int N)
     //   printf("%d",blockIdx.x);
   int width = gridDim.x * TILE_DIM;
 
-    if (x>=64 || y>=64){return;}
+    if (x>=N || y>=M){return;}
     // load all your elements into shared memory
     for (int j=0; j<4;j+=1){
         tile[threadIdx.y*TILE_DIM+threadIdx.x*4+j]=idata[y*N+x+j]; //thread 0: 0,1,2,3, thread 1: 4,5,6,7 ... ,28,29,30,31, loading is done with offset
@@ -151,15 +151,15 @@ __global__ void copySharedMem_coalesced(float *idata, float *odata, int M, int N
   __shared__ float tile[TILE_DIM * TILE_DIM];
     // block is 8 x 32 so x is 8 and y is 32
     int x = blockIdx.x * TILE_DIM + threadIdx.x; // 0,4,8,12,16,20,24,28
-    int y = blockIdx.y * TILE_DIM + threadIdx.y*4; // 0,1,2,3,...,31
+    int y = blockIdx.y * TILE_DIM + threadIdx.y; // 0,1,2,3,...,31
     //   printf("%d",blockIdx.y);
     //   printf("%d",blockIdx.x);
     int width = gridDim.x * TILE_DIM;
 
     if (x>=N || y>=M){return;}
     // load all your elements into shared memory
-    for (int j=0; j<4;j+=1){
-        tile[(threadIdx.y*4+j)*TILE_DIM+threadIdx.x]=idata[(y+j)*N+x]; //thread 0: 0,1,2,3, thread 1: 4,5,6,7 ... ,28,29,30,31, loading is done with offset
+    for (int j=0; j<TILE_DIM;j+=BLOCK_ROWS){
+        tile[(threadIdx.y+j)*TILE_DIM+threadIdx.x]=idata[(y+j)*N+x]; //thread 0: 0,1,2,3, thread 1: 4,5,6,7 ... ,28,29,30,31, loading is done with offset
     }
     
     __syncthreads();
@@ -170,8 +170,8 @@ __global__ void copySharedMem_coalesced(float *idata, float *odata, int M, int N
     int idy;
     int idx=threadIdx.x;
 
-    for (int j = 0; j < 4; j += 1){
-        idy=(threadIdx.y*4+j); // 
+    for (int j = 0; j < TILE_DIM; j += BLOCK_ROWS){
+        idy=(threadIdx.y+j); // 
         odata[blockIdx.x*TILE_DIM*N + blockIdx.y*TILE_DIM + idy*M + idx]=tile[idx*TILE_DIM+idy];
     }
 
