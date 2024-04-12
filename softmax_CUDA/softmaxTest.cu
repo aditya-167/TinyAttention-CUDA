@@ -213,8 +213,8 @@ do { \
 
 int main() {
     // Define input dimensions
-    const int N = 3000;
-    const int M = 2414;
+    const int N = 4096;
+    const int M = 4096;
 
     // Generate random input
     std::vector<float> input(N * M);
