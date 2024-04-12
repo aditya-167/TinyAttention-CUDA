@@ -41,9 +41,14 @@ void softmax_cpu(float *input, float *output, int rows, int cols) {
     }
 }
 
-int main() {
-    const int rows = 4096; // Example: large number of rows
-    const int cols = 4096;  // Example: large number of columns
+int main(int argc, char *argv[]) {
+    // Parse command-line arguments
+    if (argc != 3) {
+        std::cerr << "Usage: " << argv[0] << " <rows> <cols>" << std::endl;
+        return 1;
+    }
+    const int rows = std::stoi(argv[1]);
+    const int cols = std::stoi(argv[2]);
 
     // Allocate memory on host
     float *input_host = (float*)malloc(rows * cols * sizeof(float));
