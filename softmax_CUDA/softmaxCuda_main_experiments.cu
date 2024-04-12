@@ -25,7 +25,36 @@ const int BLOCK_SIZE = 32;
 
 #include <iostream>
 #include <math.h>
+__global__ void softmax_kernel_coalesced_coarsened(float *input, float *output, int rows, int cols, int coarsening_factor) {
+    int idx = threadIdx.x + blockIdx.x * blockDim.x;
+    if (idx < rows) {
+        float max_val = input[idx * cols];
+        for (int i = 1; i < cols; i++) {
+            float val = input[idx * cols + i];
+            max_val = (val > max_val) ? val : max_val;
+        }
 
+        float sum_exp = 0.0f;
+        // Thread coarsening: each thread handles multiple elements
+        for (int i = 0; i < cols; i += coarsening_factor) {
+            float exp_sum = 0.0f;
+            // Compute the sum of exponentials for the coarsened group
+            for (int j = 0; j < coarsening_factor && i + j < cols; j++) {
+                float exp_val = expf(input[idx * cols + i + j] - max_val);
+                output[idx * cols + i + j] = exp_val;
+                exp_sum += exp_val;
+            }
+            // Accumulate the sum of exponentials for normalization
+            sum_exp += exp_sum;
+        }
+        // Normalize the softmax values
+        for (int i = 0; i < cols; i += coarsening_factor) {
+            for (int j = 0; j < coarsening_factor && i + j < cols; j++) {
+                output[idx * cols + i + j] /= sum_exp;
+            }
+        }
+    }
+}
 
 __global__ void softmax_kernel_naive(float *input, float *output, int rows, int cols) {
     int idx = threadIdx.x + blockIdx.x * blockDim.x;
@@ -241,6 +270,34 @@ void run_softmax_cuDNN(torch::Tensor A, torch::Tensor C){
 
 }
 
+
+void run_softmax_thread_coarse(torch::Tensor A, torch::Tensor C){
+    const int seq_len = A.size(2);
+    const int head_embd = A.size(3);
+    const int M = seq_len;
+    const int N = head_embd;
+    int threadsPerBlock = 256;
+    dim3 blockDim(threadsPerBlock);
+    dim3 gridDim(ceil((M + blockDim.x - 1) / (float)blockDim.x), ceil((N + blockDim.y - 1) / (float)blockDim.y));
+
+    // loop over batchsize and head
+    for (int i = 0; i < A.size(0); i++) {
+        for (int j = 0; j < A.size(1); j++) {
+            // get the i-th batch and j-th head
+            torch::Tensor Aij = A[i][j];
+            torch::Tensor Cij = C[i][j];
+
+            // compute the softmax
+
+            softmax_kernel_coalesced_coarsened(Aij.data_ptr<float>(), Cij.data_ptr<float>(), M, N, 4);
+
+            //softmaxKernel2D_rows<<<blocks, threads>>>(Aij.data_ptr<float>(), Cij.data_ptr<float>(), M, N);
+            //softmaxKernel2D_elementwise<<<blocks, threads>>>(Aij.data_ptr<float>(), d_sums, Cij.data_ptr<float>(),  M, N);
+        }
+    }
+
+}
+
 void run_softmax_optimized(torch::Tensor A, torch::Tensor C){
     const int seq_len = A.size(2);
     const int head_embd = A.size(3);
@@ -275,7 +332,8 @@ torch::Tensor forward(torch::Tensor A) {
     const int head_embd = A.size(3);
     const int M = seq_len;
     const int N = head_embd;
-
+    double start, end;
+    start = getTimeStamp();
     torch::Tensor C = torch::zeros({batch_size, n_head, M, N}, A.options().device(torch::kCUDA));
     
     run_softmax_optimized(A,C);
@@ -284,258 +342,9 @@ torch::Tensor forward(torch::Tensor A) {
     cudaDeviceSynchronize();
     //cudaFree(d_sums);
 
+    end = getTimeStamp();
+    printf("Time taken: %lf\n", (end-start));
     return C;
 }
 
 
-
-/*
-
-// normal
-torch::Tensor forward(torch::Tensor A) {
-    const int batch_size = A.size(0);
-    const int n_head = A.size(1);
-    const int seq_len = A.size(2);
-    const int head_embd = A.size(3);
-    const int M = seq_len;
-    const int N = head_embd;
-    float *d_sums;
-    cudaMalloc(&d_sums, M * sizeof(float));
-    cudaMemset(d_sums, 0, M*sizeof(float));
-
-    torch::Tensor C = torch::zeros({batch_size, n_head, M, N}, A.options().device(torch::kCUDA));
-    auto A_data = A.data_ptr<float>();
-    auto C_data = C.data_ptr<float>();
-    int threadsPerBlock = 256;
-    dim3 blockDim(threadsPerBlock);
-    
-    //dim3 blocksPerGrid ((M + threadsPerBlock - 1) / threadsPerBlock);
-    dim3 threads(TILE_DIM_X, TILE_DIM_Y);
-    dim3 blocks((M + TILE_DIM_X - 1) / TILE_DIM_X, (N + TILE_DIM_Y - 1) / TILE_DIM_Y);
-
-    // Launch the kernel
-    //cudaDeviceSynchronize();
-    // Copy to host
-    //softmax_kernel_naive<<<blocksPerGrid, threadsPerBlock>>>(d_input, M, N);
-
-    //dim3 blockDim(16,16);
-    
-    //dim3 gridDim(ceil((M + blockDim.x - 1) / (float)blockDim.x), ceil((N + blockDim.y - 1) / (float)blockDim.y));
-
-    // loop over batchsize and head
-    for (int i = 0; i < A.size(0); i++) {
-        for (int j = 0; j < A.size(1); j++) {
-            // get the i-th batch and j-th head
-            torch::Tensor Aij = A[i][j];
-            torch::Tensor Cij = C[i][j];
-            // compute the softmax
-            //int shared_memory_size = blockDim.x * sizeof(float);
-            //softmax_cudnn(Aij.data_ptr<float>(), Cij.data_ptr<float>(), M, N);
-
-            softmaxKernel2D_rows<<<blocks, threads>>>(Aij.data_ptr<float>(), Cij.data_ptr<float>(), M, N);
-            softmaxKernel2D_elementwise<<<blocks, threads>>>(Aij.data_ptr<float>(), d_sums, Cij.data_ptr<float>(),  M, N);
-
-            //softmax_kernel_naive<<<gridDim, blockDim>>>(Aij.data_ptr<float>(), Cij.data_ptr<float>(), M, N);
-
-            //sgemm_naive<<<gridDim, blockDim>>>(A.size(2), B.size(3), A.size(3), Aij.data_ptr<float>(), Bij.data_ptr<float>(), Cij.data_ptr<float>());
-            // allocate memory for output on GPU in cuda
-        }
-    }
-
-    //softmax_kernel_naive<<<gridDim, blockDim>>>(A_data, C_data, M, N, softmax_scale);
-    cudaDeviceSynchronize();
-    //cudaFree(d_sums);
-
-
-    return C;
-}
-*/
-
-/*
-int main() {
-    const int rows = 3000; // Number of samples
-    const int cols = 4400; // Number of classes
-    
-    // Initialize random seed
-    srand(time(NULL));
-
-    // Allocate memory for input matrix on CPU and initialize it with random values
-    float *input_cpu = (float*)malloc(rows * cols * sizeof(float));
-    for (int i = 0; i < rows; ++i) {
-        for (int j = 0; j < cols; ++j) {
-            input_cpu[i * cols + j] = static_cast<float>(rand()) / static_cast<float>(RAND_MAX);
-        }
-    }
-
-    // Allocate memory for output matrix on CPU
-    float *output_cpu = (float*)malloc(rows * cols * sizeof(float));
-
-    // Allocate memory on the device (GPU) for input and output
-    float *d_input, *d_output;
-    cudaMalloc((void**)&d_input, rows * cols * sizeof(float));
-    cudaMalloc((void**)&d_output, rows * cols * sizeof(float));
-
-    // Copy input data from CPU to GPU
-    cudaMemcpy(d_input, input_cpu, rows * cols * sizeof(float), cudaMemcpyHostToDevice);
-
-    // Define grid and block dimensions
-    dim3 blockDim(256);
-    dim3 gridDim((rows + blockDim.x - 1) / blockDim.x);
-
-    // Create CUDA events for timing GPU computation
-    cudaEvent_t start, stop;
-    cudaEventCreate(&start);
-    cudaEventCreate(&stop);
-
-    // Record start event for GPU computation
-    cudaEventRecord(start);
-
-    // Launch the kernel
-    softmax_kernel_naive<<<gridDim, blockDim>>>(d_input, d_output, rows, cols);
-
-    // Record stop event for GPU computation
-    cudaEventRecord(stop);
-
-    // Synchronize events
-    cudaEventSynchronize(stop);
-
-    // Calculate elapsed time for GPU computation
-    float milliseconds = 0;
-    cudaEventElapsedTime(&milliseconds, start, stop);
-    std::cout << "GPU computation time: " << milliseconds << " milliseconds" << std::endl;
-
-    // Copy the result back from GPU to CPU
-    cudaMemcpy(output_cpu, d_output, rows * cols * sizeof(float), cudaMemcpyDeviceToHost);
-
-    // Perform softmax computation on CPU for comparison and measure time
-    auto start_cpu = std::chrono::high_resolution_clock::now();
-    for (int i = 0; i < rows; ++i) {
-        float max_val = input_cpu[i * cols];
-        for (int j = 1; j < cols; ++j) {
-            if (input_cpu[i * cols + j] > max_val) {
-                max_val = input_cpu[i * cols + j];
-            }
-        }
-        float sum_exp = 0.0f;
-        for (int j = 0; j < cols; ++j) {
-            sum_exp += expf(input_cpu[i * cols + j] - max_val);
-        }
-        for (int j = 0; j < cols; ++j) {
-            output_cpu[i * cols + j] = expf(input_cpu[i * cols + j] - max_val) / sum_exp;
-        }
-    }
-    auto end_cpu = std::chrono::high_resolution_clock::now();
-    std::chrono::duration<double, std::milli> cpu_duration = end_cpu - start_cpu;
-    std::cout << "CPU computation time: " << cpu_duration.count() << " milliseconds" << std::endl;
-
-    // Verify GPU and CPU results
-    bool passed = true;
-    for (int i = 0; i < rows; ++i) {
-        for (int j = 0; j < cols; ++j) {
-            if (fabs(output_cpu[i * cols + j] - output_cpu[i * cols + j]) > 1e-5) {
-                passed = false;
-                std::cout << "Verification failed for element [" << i << "][" << j << "]." << std::endl;
-                std::cout << "GPU: " << output_cpu[i * cols + j] << ", CPU: " << output_cpu[i * cols + j] << std::endl;
-            }
-        }
-    }
-
-    if (passed) {
-        std::cout << "Verification passed with a threshold of 1e-5." << std::endl;
-    } else {
-        std::cout << "Verification failed." << std::endl;
-    }
-
-    // Free device memory
-    cudaFree(d_input);
-    cudaFree(d_output);
-
-    // Free CPU memory
-    free(input_cpu);
-    free(output_cpu);
-
-    return 0;
-}
-/*
-int main() {
-    const int rows = 3000; // Number of samples
-    const int cols = 1500; // Number of classes
-    
-    // Initialize random seed
-    srand(time(NULL));
-
-    // Allocate memory for input matrix on CPU and initialize it with random values
-    float *input_cpu = (float*)malloc(rows * cols * sizeof(float));
-    for (int i = 0; i < rows; ++i) {
-        for (int j = 0; j < cols; ++j) {
-            input_cpu[i * cols + j] = static_cast<float>(rand()) / static_cast<float>(RAND_MAX);
-        }
-    }
-
-    // Allocate memory for output matrix on CPU
-    float *output_cpu = (float*)malloc(rows * cols * sizeof(float));
-
-    // Allocate memory on the device (GPU) for input and output
-    float *d_input, *d_output;
-    cudaMalloc((void**)&d_input, rows * cols * sizeof(float));
-    cudaMalloc((void**)&d_output, rows * cols * sizeof(float));
-
-    // Copy input data from CPU to GPU
-    cudaMemcpy(d_input, input_cpu, rows * cols * sizeof(float), cudaMemcpyHostToDevice);
-
-    // Define grid and block dimensions
-    dim3 blockDim(256);
-    dim3 gridDim((rows + blockDim.x - 1) / blockDim.x);
-
-    // Launch the kernel
-    softmax_kernel_naive<<<gridDim, blockDim>>>(d_input, d_output, rows, cols);
-
-    // Copy the result back from GPU to CPU
-    cudaMemcpy(output_cpu, d_output, rows * cols * sizeof(float), cudaMemcpyDeviceToHost);
-
-    // Free device memory
-    cudaFree(d_input);
-    cudaFree(d_output);
-
-    // Perform softmax computation on CPU for comparison
-    for (int i = 0; i < rows; ++i) {
-        float max_val = input_cpu[i * cols];
-        for (int j = 1; j < cols; ++j) {
-            if (input_cpu[i * cols + j] > max_val) {
-                max_val = input_cpu[i * cols + j];
-            }
-        }
-        float sum_exp = 0.0f;
-        for (int j = 0; j < cols; ++j) {
-            sum_exp += expf(input_cpu[i * cols + j] - max_val);
-        }
-        for (int j = 0; j < cols; ++j) {
-            output_cpu[i * cols + j] = expf(input_cpu[i * cols + j] - max_val) / sum_exp;
-        }
-    }
-
-    // Verify GPU and CPU results
-    bool passed = true;
-    for (int i = 0; i < rows; ++i) {
-        for (int j = 0; j < cols; ++j) {
-            if (fabs(output_cpu[i * cols + j] - output_cpu[i * cols + j]) > 1e-5) {
-                passed = false;
-                std::cout << "Verification failed for element [" << i << "][" << j << "]." << std::endl;
-                std::cout << "GPU: " << output_cpu[i * cols + j] << ", CPU: " << output_cpu[i * cols + j] << std::endl;
-            }
-        }
-    }
-
-    if (passed) {
-        std::cout << "Verification passed with a threshold of 1e-5." << std::endl;
-    } else {
-        std::cout << "Verification failed." << std::endl;
-    }
-
-    // Free CPU memory
-    free(input_cpu);
-    free(output_cpu);
-
-    return 0;
-}
-*/
