@@ -76,7 +76,7 @@ int main() {
     const int rows = 4096;
     const int cols = 4096;
     const int size = rows * cols * sizeof(float);
-    const int coarsening_factor = 4; // You can adjust this value as needed
+    const int coarsening_factor = 8; // You can adjust this value as needed
 
     // Allocate memory on the host
     float *input_host = new float[size];

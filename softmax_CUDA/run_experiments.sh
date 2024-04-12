@@ -7,8 +7,8 @@ for file in *.cu; do
         echo "Compiling $file..."
         nvcc "$file" -o "$filename"
         if [ $? -eq 0 ]; then
-            echo "Running $filename..."
-            ./"$filename"
+            echo "successfully compiled $filename..."
+            #./"$filename"
             echo "-------------------------------------"
         else
             echo "Compilation failed for $file"
