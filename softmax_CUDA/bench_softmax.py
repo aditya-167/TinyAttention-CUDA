@@ -12,10 +12,10 @@ minimal_softmax = load(name='softmax2', sources=['main.cpp', 'softmax2.cu'], ext
 # n_head = 12
 # seq_len = 128
 # head_embd = 64
-batch_size = 1
-n_head = 2
-seq_len = 500
-head_embd = 600
+batch_size = 4
+n_head = 8
+seq_len = 1200
+head_embd = 2000
 
 
 q = torch.randn(batch_size, n_head, seq_len, head_embd).cuda()
