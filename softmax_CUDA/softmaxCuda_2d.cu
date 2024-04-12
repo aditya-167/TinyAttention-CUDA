@@ -2,7 +2,6 @@
 #include <cmath>
 #include <cstdlib>
 #include <cuda_runtime.h>
-#include <cuda.h>
 
 __global__ void softmax2D_kernel(float *d_in, float *d_out, int M, int N) {
     int row = blockIdx.y * blockDim.y + threadIdx.y;
@@ -70,18 +69,53 @@ int main() {
     cudaMemcpy(input_device, input_host, M * N * sizeof(float), cudaMemcpyHostToDevice);
 
     // Define grid and block size
-    dim3 blockSize(16, 16);
+    dim3 blockSize(32, 32);
     dim3 gridSize((N + blockSize.x - 1) / blockSize.x, (M + blockSize.y - 1) / blockSize.y);
+
+    // Create CUDA events for timing GPU execution
+    cudaEvent_t start_gpu, stop_gpu;
+    cudaEventCreate(&start_gpu);
+    cudaEventCreate(&stop_gpu);
+
+    // Record start event for GPU
+    cudaEventRecord(start_gpu);
 
     // Launch kernel
     softmax2D_kernel<<<gridSize, blockSize>>>(input_device, output_device, M, N);
+    cudaDeviceSynchronize();
+
+    // Record stop event for GPU
+    cudaEventRecord(stop_gpu);
 
     // Transfer output data from device to host
     cudaMemcpy(output_host_gpu, output_device, M * N * sizeof(float), cudaMemcpyDeviceToHost);
 
+    // Synchronize GPU
+
+    // Calculate GPU execution time
+    float gpu_time;
+    cudaEventElapsedTime(&gpu_time, start_gpu, stop_gpu);
+
+    // Create CUDA events for timing CPU execution
+    cudaEvent_t start_cpu, stop_cpu;
+    cudaEventCreate(&start_cpu);
+    cudaEventCreate(&stop_cpu);
+
+    // Record start event for CPU
+    cudaEventRecord(start_cpu);
+
     // Perform softmax on CPU for verification
     softmax2D_cpu(input_host, output_host_cpu, M, N);
-	cudaDeviceSynchronize();
+
+    // Record stop event for CPU
+    cudaEventRecord(stop_cpu);
+
+    // Synchronize CPU
+    cudaDeviceSynchronize();
+
+    // Calculate CPU execution time
+    float cpu_time;
+    cudaEventElapsedTime(&cpu_time, start_cpu, stop_cpu);
 
     // Compare CPU and GPU results
     bool passed = true;
@@ -100,12 +134,21 @@ int main() {
         std::cout << "CPU and GPU results mismatch." << std::endl;
     }
 
+    std::cout << "GPU Execution Time: " << gpu_time << " ms" << std::endl;
+    std::cout << "CPU Execution Time: " << cpu_time << " ms" << std::endl;
+
     // Free memory
     free(input_host);
     free(output_host_cpu);
     free(output_host_gpu);
     cudaFree(input_device);
     cudaFree(output_device);
+
+    // Destroy events
+    cudaEventDestroy(start_gpu);
+    cudaEventDestroy(stop_gpu);
+    cudaEventDestroy(start_cpu);
+    cudaEventDestroy(stop_cpu);
 
     return 0;
 }
