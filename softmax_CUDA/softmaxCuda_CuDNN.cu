@@ -1,30 +1,11 @@
-#include <cuda_runtime.h>
-#include <cudnn.h>
 #include <iostream>
+#include <cmath>
+#include <cstdlib>
 #include <vector>
 #include <chrono>
+#include <cuda_runtime.h>
 #include <cudnn.h>
-void softmax_cudnn(float *input, float *output, int num_samples, int num_classes) {
-    // Set up cuDNN
-    cudnnHandle_t cudnn;
-    cudnnCreate(&cudnn);
-    
-    cudnnTensorDescriptor_t input_desc, output_desc;
-    cudnnCreateTensorDescriptor(&input_desc);
-    cudnnCreateTensorDescriptor(&output_desc);
-    
-    cudnnSetTensor4dDescriptor(input_desc, CUDNN_TENSOR_NCHW, CUDNN_DATA_FLOAT, num_samples, num_classes, 1, 1);
-    cudnnSetTensor4dDescriptor(output_desc, CUDNN_TENSOR_NCHW, CUDNN_DATA_FLOAT, num_samples, num_classes, 1, 1);
-    
-    // Perform softmax operation
-    float alpha = 1.0f, beta = 0.0f;
-    cudnnSoftmaxForward(cudnn, CUDNN_SOFTMAX_ACCURATE, CUDNN_SOFTMAX_MODE_INSTANCE, &alpha, input_desc, input, &beta, output_desc, output);
-    
-    // Clean up
-    cudnnDestroyTensorDescriptor(input_desc);
-    cudnnDestroyTensorDescriptor(output_desc);
-    cudnnDestroy(cudnn);
-}
+
 #define CUDA_CHECK(call) \
 do { \
     cudaError_t error = call; \
@@ -43,6 +24,29 @@ do { \
     } \
 } while(0)
 
+// Kernel declaration
+void softmax_cudnn(float *input, float *output, int num_samples, int num_classes) {
+    // Set up cuDNN
+    cudnnHandle_t cudnn;
+    CUDNN_CHECK(cudnnCreate(&cudnn));
+    
+    cudnnTensorDescriptor_t input_desc, output_desc;
+    CUDNN_CHECK(cudnnCreateTensorDescriptor(&input_desc));
+    CUDNN_CHECK(cudnnCreateTensorDescriptor(&output_desc));
+    
+    CUDNN_CHECK(cudnnSetTensor4dDescriptor(input_desc, CUDNN_TENSOR_NCHW, CUDNN_DATA_FLOAT, num_samples, num_classes, 1, 1));
+    CUDNN_CHECK(cudnnSetTensor4dDescriptor(output_desc, CUDNN_TENSOR_NCHW, CUDNN_DATA_FLOAT, num_samples, num_classes, 1, 1));
+    
+    // Perform softmax operation
+    float alpha = 1.0f, beta = 0.0f;
+    CUDNN_CHECK(cudnnSoftmaxForward(cudnn, CUDNN_SOFTMAX_ACCURATE, CUDNN_SOFTMAX_MODE_INSTANCE, &alpha, input_desc, input, &beta, output_desc, output));
+    
+    // Clean up
+    CUDNN_CHECK(cudnnDestroyTensorDescriptor(input_desc));
+    CUDNN_CHECK(cudnnDestroyTensorDescriptor(output_desc));
+    CUDNN_CHECK(cudnnDestroy(cudnn));
+}
+
 // CPU implementation of softmax using cudnn
 void softmax_cudnn_cpu(float *input, float *output, int num_samples, int num_classes) {
     for (int i = 0; i < num_samples; ++i) {
@@ -60,10 +64,14 @@ void softmax_cudnn_cpu(float *input, float *output, int num_samples, int num_cla
     }
 }
 
-int main() {
-    // Define input dimensions
-    const int num_samples = 4096;
-    const int num_classes = 4096;
+int main(int argc, char *argv[]) {
+    // Parse command-line arguments
+    if (argc != 3) {
+        std::cerr << "Usage: " << argv[0] << " <num_samples> <num_classes>" << std::endl;
+        return 1;
+    }
+    const int num_samples = std::stoi(argv[1]);
+    const int num_classes = std::stoi(argv[2]);
 
     // Generate random input
     std::vector<float> input(num_samples * num_classes);
