@@ -67,15 +67,43 @@ int main() {
     int blockSize = 256;
     int numBlocks = (rows + blockSize - 1) / blockSize;
 
+    // Create CUDA events for timing
+    cudaEvent_t start, stop;
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
+
+    // Record start event for GPU
+    cudaEventRecord(start);
+
     // Launch kernel
     softmax_kernel_naive<<<numBlocks, blockSize>>>(input_device, output_device, rows, cols);
     cudaDeviceSynchronize();
 
+    // Record stop event for GPU
+    cudaEventRecord(stop);
+
     // Transfer output data from device to host
     cudaMemcpy(output_host_gpu, output_device, rows * cols * sizeof(float), cudaMemcpyDeviceToHost);
 
+    // Calculate GPU execution time
+    float gpu_time;
+    cudaEventElapsedTime(&gpu_time, start, stop);
+
+    // Record start time for CPU
+    cudaEventRecord(start);
+
     // Perform softmax on CPU for verification
     softmax_cpu(input_host, output_host_cpu, rows, cols);
+
+    // Record stop time for CPU
+    cudaEventRecord(stop);
+
+    // Synchronize event recording
+    cudaEventSynchronize(stop);
+
+    // Calculate CPU execution time
+    float cpu_time;
+    cudaEventElapsedTime(&cpu_time, start, stop);
 
     // Compare CPU and GPU results
     bool passed = true;
@@ -94,12 +122,19 @@ int main() {
         std::cout << "CPU and GPU results mismatch." << std::endl;
     }
 
+    std::cout << "GPU Execution Time: " << gpu_time << " ms" << std::endl;
+    std::cout << "CPU Execution Time: " << cpu_time << " ms" << std::endl;
+
     // Free memory
     free(input_host);
     free(output_host_cpu);
     free(output_host_gpu);
     cudaFree(input_device);
     cudaFree(output_device);
+
+    // Destroy events
+    cudaEventDestroy(start);
+    cudaEventDestroy(stop);
 
     return 0;
 }
