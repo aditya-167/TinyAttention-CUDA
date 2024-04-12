@@ -69,7 +69,7 @@ __global__ void softmax2D_kernel(float *d_in, float *d_out, int M, int N) {
 }
 
 
-/*
+
 template <typename T>
 __global__ void softmaxKernel2D_rows(const T* input, T* exp_sums, int N, int M) {
     int row = blockIdx.y * TILE_DIM_Y + threadIdx.y;
@@ -111,7 +111,7 @@ __global__ void softmaxKernel2D_elementwise(const T* input, const T* exp_sums, T
             output[row * M + col] = expf(input[row * M + col] - max_val) / exp_sum_row;
     }
 }
-*/
+
 
 
 
@@ -241,6 +241,30 @@ void run_softmax_cuDNN(torch::Tensor A, torch::Tensor C){
 
 }
 
+void run_softmax_optimized(torch::Tensor A, torch::Tensor C){
+    const int seq_len = A.size(2);
+    const int head_embd = A.size(3);
+    const int M = seq_len;
+    const int N = head_embd;
+    float *d_sums;
+    cudaMalloc(&d_sums, M * sizeof(float));
+    dim3 threads(TILE_DIM_X, TILE_DIM_Y);
+    dim3 blocks((M + TILE_DIM_X - 1) / TILE_DIM_X, (N + TILE_DIM_Y - 1) / TILE_DIM_Y);
+
+    // loop over batchsize and head
+    for (int i = 0; i < A.size(0); i++) {
+        for (int j = 0; j < A.size(1); j++) {
+            // get the i-th batch and j-th head
+            torch::Tensor Aij = A[i][j];
+            torch::Tensor Cij = C[i][j];
+
+            // compute the softmax
+            softmaxKernel2D_rows<<<blocks, threads>>>(Aij.data_ptr<float>(), d_sums, M, N);
+            softmaxKernel2D_elementwise<<<blocks, threads>>>(Aij.data_ptr<float>(), d_sums, Cij.data_ptr<float>(),  M, N);
+        }
+    }
+    cudaFree(d_sums);
+}
 
 /*************************************************************************** Invocations*********************************************************/
 
@@ -254,7 +278,7 @@ torch::Tensor forward(torch::Tensor A) {
 
     torch::Tensor C = torch::zeros({batch_size, n_head, M, N}, A.options().device(torch::kCUDA));
     
-    run_softmax_cuDNN(A,C);
+    run_softmax_optimized(A,C);
 
     //softmax_kernel_naive<<<gridDim, blockDim>>>(A_data, C_data, M, N, softmax_scale);
     cudaDeviceSynchronize();

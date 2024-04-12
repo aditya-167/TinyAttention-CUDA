@@ -1,108 +1,250 @@
 #include <iostream>
-#include <cstdlib>
 #include <cmath>
+#include <cstdlib>
+#include <ctime>
 #include <cuda_runtime.h>
-#include <cfloat> // For FLT_MAX
 
-#define MAX_BLOCK_SIZE 1024 // Define your maximum block size here
+/*
+#define THREADS_PER_BLOCK 256
 
-__global__ void softmax(float *d_in, float *d_out, int N) {
-    __shared__ float shared_exp[MAX_BLOCK_SIZE];
-    __shared__ float shared_sum;
-
-    int col = blockIdx.x * blockDim.x + threadIdx.x;
-
-    float max_val = -FLT_MAX;
-    for (int offset = 0; offset < N; offset += blockDim.x) {
-        int idx = offset + threadIdx.x;
-        if (idx < N && d_in[idx] > max_val) {
-            max_val = d_in[idx];
+// CUDA kernel for softmax calculation with thread coalescing and coarsening
+__global__ void softmax_kernel_coalesced_coarsened(float *input, float *output, int rows, int cols, int coarsening_factor) {
+    int idx = threadIdx.x + blockIdx.x * blockDim.x;
+    if (idx < rows) {
+        float max_val = input[idx * cols];
+        for (int i = 1; i < cols; i++) {
+            float val = input[idx * cols + i];
+            max_val = (val > max_val) ? val : max_val;
         }
-    }
-    __syncthreads();
 
-    if (col < N) {
-        printf("Thread %d: Input value: %f, Max value: %f\n", threadIdx.x, d_in[col], max_val);
-    }
-
-    float local_exp = 0.0f;
-    if (col < N) {
-        local_exp = expf(d_in[col] - max_val); // Subtract max_val for numerical stability
-        printf("Thread %d: Local exp value: %f\n", threadIdx.x, local_exp);
-        shared_exp[threadIdx.x] = local_exp;
-    } else {
-        shared_exp[threadIdx.x] = 0.0f; // Zero padding for elements beyond N
-    }
-    __syncthreads();
-
-    if (threadIdx.x == 0) {
-        float sum = 0.0f;
-        for (int i = 0; i < blockDim.x; ++i) {
-            sum += shared_exp[i];
+        float sum_exp = 0.0f;
+        // Thread coarsening: each thread handles multiple elements
+        for (int i = 0; i < cols; i += coarsening_factor) {
+            float exp_sum = 0.0f;
+            // Compute the sum of exponentials for the coarsened group
+            for (int j = 0; j < coarsening_factor && i + j < cols; j++) {
+                float exp_val = expf(input[idx * cols + i + j] - max_val);
+                output[idx * cols + i + j] = exp_val;
+                exp_sum += exp_val;
+            }
+            // Accumulate the sum of exponentials for normalization
+            sum_exp += exp_sum;
         }
-        printf("Block %d: Shared sum: %f\n", blockIdx.x, sum);
-        shared_sum = sum;
-    }
-    __syncthreads();
-
-    if (col < N) {
-        d_out[col] = shared_exp[threadIdx.x] / shared_sum;
+        // Normalize the softmax values
+        for (int i = 0; i < cols; i += coarsening_factor) {
+            for (int j = 0; j < coarsening_factor && i + j < cols; j++) {
+                output[idx * cols + i + j] /= sum_exp;
+            }
+        }
     }
 }
 
+// Host function to calculate softmax
+void softmax_cpu(float *input, float *output, int rows, int cols) {
+    for (int i = 0; i < rows; i++) {
+        float max_val = input[i * cols];
+        for (int j = 1; j < cols; j++) {
+            float val = input[i * cols + j];
+            max_val = (val > max_val) ? val : max_val;
+        }
+
+        float sum_exp = 0.0f;
+        for (int j = 0; j < cols; j++) {
+            float exp_val = expf(input[i * cols + j] - max_val);
+            output[i * cols + j] = exp_val;
+            sum_exp += exp_val;
+        }
+
+        for (int j = 0; j < cols; j++) {
+            output[i * cols + j] /= sum_exp;
+        }
+    }
+}
+
+// Function to verify GPU results against CPU results
+bool verify_result(float *gpu_result, float *cpu_result, int size) {
+    for (int i = 0; i < size; i++) {
+        if (fabs(gpu_result[i] - cpu_result[i]) > 1e-5) {
+            std::cout << "Verification failed at index " << i << ": GPU - " << gpu_result[i] << ", CPU - " << cpu_result[i] << std::endl;
+            return false;
+        }
+    }
+    return true;
+}
+
 int main() {
-    const int N = 1024; // Example array size
-    const int BLOCK_SIZE = 256; // Example block size
-    const int NUM_BLOCKS = (N + BLOCK_SIZE - 1) / BLOCK_SIZE;
+    const int rows = 3500;
+    const int cols = 4000;
+    const int size = rows * cols * sizeof(float);
+    const int coarsening_factor = 4; // You can adjust this value as needed
 
-    float *h_input = new float[N];
-    float *h_output_cpu = new float[N];
-    float *h_output_gpu = new float[N];
+    // Allocate memory on the host
+    float *input_host = new float[size];
+    float *output_host_cpu = new float[size];
+    float *output_host_gpu = new float[size];
 
-    for (int i = 0; i < N; ++i) {
-        h_input[i] = static_cast<float>(rand()) / RAND_MAX; // Random values between 0 and 1
+    // Initialize input data on the host
+    srand(time(NULL));
+    for (int i = 0; i < rows * cols; i++) {
+        input_host[i] = static_cast<float>(rand()) / static_cast<float>(RAND_MAX) * 10.0f;
     }
 
-    float *d_input, *d_output;
-    cudaMalloc(&d_input, N * sizeof(float));
-    cudaMalloc(&d_output, N * sizeof(float));
+    // Allocate memory on the device
+    float *input_device, *output_device;
+    cudaMalloc((void**)&input_device, size);
+    cudaMalloc((void**)&output_device, size);
 
-    cudaMemcpy(d_input, h_input, N * sizeof(float), cudaMemcpyHostToDevice);
+    // Copy input data from host to device
+    cudaMemcpy(input_device, input_host, size, cudaMemcpyHostToDevice);
 
-    softmax<<<NUM_BLOCKS, BLOCK_SIZE, BLOCK_SIZE * sizeof(float)>>>(d_input, d_output, N);
-    cudaDeviceSynchronize(); // Ensure kernel execution is finished before copying data back
+    // Launch GPU kernel
+    int num_blocks = (rows + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK;
+    softmax_kernel_coalesced_coarsened<<<num_blocks, THREADS_PER_BLOCK>>>(input_device, output_device, rows, cols, coarsening_factor);
+    cudaDeviceSynchronize();
 
-    cudaMemcpy(h_output_gpu, d_output, N * sizeof(float), cudaMemcpyDeviceToHost);
+    // Copy output data from device to host
+    cudaMemcpy(output_host_gpu, output_device, size, cudaMemcpyDeviceToHost);
 
-    // Calculate softmax on CPU for verification
-    for (int i = 0; i < N; ++i) {
-        float sum = 0.0f;
-        for (int j = 0; j < N; ++j) {
-            sum += expf(h_input[j]);
+    // Perform softmax calculation on the CPU
+    softmax_cpu(input_host, output_host_cpu, rows, cols);
+
+    // Verify GPU results against CPU results
+    bool result = verify_result(output_host_gpu, output_host_cpu, rows * cols);
+    if (result) {
+        std::cout << "GPU computation matches CPU computation." << std::endl;
+    } else {
+        std::cout << "GPU computation does not match CPU computation." << std::endl;
+    }
+
+    // Free memory
+    delete[] input_host;
+    delete[] output_host_cpu;
+    delete[] output_host_gpu;
+    cudaFree(input_device);
+    cudaFree(output_device);
+
+    return 0;
+}
+*/
+
+#include <iostream>
+#include <cmath>
+#include <cstdlib>
+#include <ctime>
+#include <cuda_runtime.h>
+
+#define THREADS_PER_BLOCK 256
+
+// CUDA kernel for softmax calculation with vectorization
+__global__ void softmax_kernel_vectorized(float *input, float *output, int rows, int cols) {
+    int idx = threadIdx.x + blockIdx.x * blockDim.x;
+    if (idx < rows) {
+        // Initialize max_val and sum_exp using vectorized instructions
+        float max_val = input[idx * cols];
+        float sum_exp = 0.0f;
+
+        // Compute max_val and sum_exp using vectorized instructions
+        for (int i = 1; i < cols; i += 4) {
+            float4 input_vec = reinterpret_cast<float4*>(input + idx * cols)[i / 4];
+            max_val = fmaxf(max_val, fmaxf(fmaxf(input_vec.x, input_vec.y), fmaxf(input_vec.z, input_vec.w)));
+            sum_exp += expf(input_vec.x - max_val) + expf(input_vec.y - max_val) + expf(input_vec.z - max_val) + expf(input_vec.w - max_val);
         }
-        h_output_cpu[i] = expf(h_input[i]) / sum;
-    }
 
-    // Compare CPU and GPU results
-    bool verification_failed = false;
-    for (int i = 0; i < N; ++i) {
-        if (std::abs(h_output_cpu[i] - h_output_gpu[i]) > 1e-5) {
-            std::cerr << "Verification failed at index " << i << std::endl;
-            std::cerr << "CPU result: " << h_output_cpu[i] << ", GPU result: " << h_output_gpu[i] << std::endl;
-            verification_failed = true;
-            break;
+        // Compute softmax values using vectorized instructions
+        for (int i = 0; i < cols; i += 4) {
+            float4 input_vec = reinterpret_cast<float4*>(input + idx * cols)[i / 4];
+            float4 exp_val = make_float4(expf(input_vec.x - max_val), expf(input_vec.y - max_val), expf(input_vec.z - max_val), expf(input_vec.w - max_val));
+            sum_exp = exp_val.x + exp_val.y + exp_val.z + exp_val.w;
+            float4 softmax_val = make_float4(exp_val.x / sum_exp, exp_val.y / sum_exp, exp_val.z / sum_exp, exp_val.w / sum_exp);
+            reinterpret_cast<float4*>(output + idx * cols)[i / 4] = softmax_val;
         }
     }
+}
 
-    if (!verification_failed) {
-        std::cout << "Verification passed" << std::endl;
+// Host function to calculate softmax on CPU
+void softmax_cpu(float *input, float *output, int rows, int cols) {
+    for (int i = 0; i < rows; i++) {
+        // Compute max value
+        float max_val = input[i * cols];
+        for (int j = 1; j < cols; j++) {
+            max_val = fmaxf(max_val, input[i * cols + j]);
+        }
+
+        // Compute exponentials and sum
+        float sum_exp = 0.0f;
+        for (int j = 0; j < cols; j++) {
+            float exp_val = expf(input[i * cols + j] - max_val);
+            output[i * cols + j] = exp_val;
+            sum_exp += exp_val;
+        }
+
+        // Normalize softmax values
+        for (int j = 0; j < cols; j++) {
+            output[i * cols + j] /= sum_exp;
+        }
+    }
+}
+
+// Function to verify GPU results against CPU results
+bool verify_result(float *gpu_result, float *cpu_result, int size) {
+    for (int i = 0; i < size; i++) {
+        if (fabs(gpu_result[i] - cpu_result[i]) > 1e-5) {
+            std::cout << "Verification failed at index " << i << ": GPU - " << gpu_result[i] << ", CPU - " << cpu_result[i] << std::endl;
+            return false;
+        }
+    }
+    return true;
+}
+
+int main() {
+    const int rows = 10000; // Increase rows and cols for larger matrix
+    const int cols = 1000;
+    const int size = rows * cols * sizeof(float);
+
+    // Allocate memory on the host
+    float *input_host = new float[size];
+    float *output_host_cpu = new float[size];
+    float *output_host_gpu = new float[size];
+
+    // Initialize input data on the host
+    srand(time(NULL));
+    for (int i = 0; i < rows * cols; i++) {
+        input_host[i] = static_cast<float>(rand()) / static_cast<float>(RAND_MAX) * 10.0f;
     }
 
-    delete[] h_input;
-    delete[] h_output_cpu;
-    delete[] h_output_gpu;
-    cudaFree(d_input);
-    cudaFree(d_output);
+    // Allocate memory on the device
+    float *input_device, *output_device;
+    cudaMalloc((void**)&input_device, size);
+    cudaMalloc((void**)&output_device, size);
+
+    // Copy input data from host to device
+    cudaMemcpy(input_device, input_host, size, cudaMemcpyHostToDevice);
+
+    // Launch GPU kernel
+    int num_blocks = (rows + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK;
+    softmax_kernel_vectorized<<<num_blocks, THREADS_PER_BLOCK>>>(input_device, output_device, rows, cols);
+    cudaDeviceSynchronize();
+
+    // Copy output data from device to host
+    cudaMemcpy(output_host_gpu, output_device, size, cudaMemcpyDeviceToHost);
+
+    // Perform softmax calculation on the CPU
+    softmax_cpu(input_host, output_host_cpu, rows, cols);
+
+    // Verify GPU results against CPU results
+    bool result = verify_result(output_host_gpu, output_host_cpu, rows * cols);
+    if (result) {
+        std::cout << "GPU computation matches CPU computation." << std::endl;
+    } else {
+        std::cout << "GPU computation does not match CPU computation." << std::endl;
+    }
+
+    // Free memory
+    delete[] input_host;
+    delete[] output_host_cpu;
+    delete[] output_host_gpu;
+    cudaFree(input_device);
+    cudaFree(output_device);
 
     return 0;
 }
