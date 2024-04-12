@@ -3,8 +3,8 @@
 #include <cstdlib>
 #include <ctime>
 #include <cuda_runtime.h>
+#include <chrono>
 
-/*
 #define THREADS_PER_BLOCK 256
 
 // CUDA kernel for softmax calculation with thread coalescing and coarsening
@@ -73,8 +73,8 @@ bool verify_result(float *gpu_result, float *cpu_result, int size) {
 }
 
 int main() {
-    const int rows = 3500;
-    const int cols = 4000;
+    const int rows = 4096;
+    const int cols = 4096;
     const int size = rows * cols * sizeof(float);
     const int coarsening_factor = 4; // You can adjust this value as needed
 
@@ -97,16 +97,35 @@ int main() {
     // Copy input data from host to device
     cudaMemcpy(input_device, input_host, size, cudaMemcpyHostToDevice);
 
+    // Create CUDA events for timing GPU execution
+    cudaEvent_t start_gpu, stop_gpu;
+    cudaEventCreate(&start_gpu);
+    cudaEventCreate(&stop_gpu);
+
+    // Record start event for GPU
+    cudaEventRecord(start_gpu);
+
     // Launch GPU kernel
     int num_blocks = (rows + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK;
     softmax_kernel_coalesced_coarsened<<<num_blocks, THREADS_PER_BLOCK>>>(input_device, output_device, rows, cols, coarsening_factor);
     cudaDeviceSynchronize();
 
+    // Record stop event for GPU
+    cudaEventRecord(stop_gpu);
+    cudaEventSynchronize(stop_gpu);
+
+    // Calculate GPU execution time
+    float gpu_time;
+    cudaEventElapsedTime(&gpu_time, start_gpu, stop_gpu);
+
     // Copy output data from device to host
     cudaMemcpy(output_host_gpu, output_device, size, cudaMemcpyDeviceToHost);
 
-    // Perform softmax calculation on the CPU
+    // Perform softmax calculation on the CPU and measure time
+    auto start_cpu = std::chrono::high_resolution_clock::now();
     softmax_cpu(input_host, output_host_cpu, rows, cols);
+    auto end_cpu = std::chrono::high_resolution_clock::now();
+    auto duration_cpu = std::chrono::duration_cast<std::chrono::milliseconds>(end_cpu - start_cpu);
 
     // Verify GPU results against CPU results
     bool result = verify_result(output_host_gpu, output_host_cpu, rows * cols);
@@ -116,6 +135,12 @@ int main() {
         std::cout << "GPU computation does not match CPU computation." << std::endl;
     }
 
+    // Print GPU execution time
+    std::cout << "GPU Execution Time: " << gpu_time << " milliseconds" << std::endl;
+
+    // Print CPU execution time
+    std::cout << "CPU Execution Time: " << duration_cpu.count() << " milliseconds" << std::endl;
+
     // Free memory
     delete[] input_host;
     delete[] output_host_cpu;
@@ -123,10 +148,14 @@ int main() {
     cudaFree(input_device);
     cudaFree(output_device);
 
+    // Destroy events
+    cudaEventDestroy(start_gpu);
+    cudaEventDestroy(stop_gpu);
+
     return 0;
 }
-*/
 
+/*
 #include <iostream>
 #include <cmath>
 #include <cstdlib>
@@ -248,3 +277,4 @@ int main() {
 
     return 0;
 }
+*/
