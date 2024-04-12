@@ -1,7 +1,6 @@
 #include <torch/types.h>
 #include <cuda.h>
 #include <cuda_runtime.h>
-#pragma once
 #include <sys/time.h>
 
 #include <algorithm>
