@@ -239,6 +239,14 @@ int main() {
     dim3 blockDim(TILE_DIM_X, TILE_DIM_Y);
     dim3 gridDim((M + TILE_DIM_X - 1) / TILE_DIM_X, (N + TILE_DIM_Y - 1) / TILE_DIM_Y);
 
+    // Create CUDA events for timing GPU execution
+    cudaEvent_t start_gpu, stop_gpu;
+    CUDA_CHECK(cudaEventCreate(&start_gpu));
+    CUDA_CHECK(cudaEventCreate(&stop_gpu));
+
+    // Record start event for GPU
+    CUDA_CHECK(cudaEventRecord(start_gpu));
+
     // Launch softmax kernel for rows on GPU
     softmaxKernel2D_rows<<<gridDim, blockDim>>>(d_input, d_exp_sums, N, M);
     CUDA_CHECK(cudaGetLastError());
@@ -248,19 +256,54 @@ int main() {
     std::vector<float> exp_sums(N);
     CUDA_CHECK(cudaMemcpy(exp_sums.data(), d_exp_sums, N * sizeof(float), cudaMemcpyDeviceToHost));
 
+    // Record stop event for GPU
+    CUDA_CHECK(cudaEventRecord(stop_gpu));
+    CUDA_CHECK(cudaEventSynchronize(stop_gpu));
+
+    // Calculate GPU execution time
+    float gpu_time;
+    CUDA_CHECK(cudaEventElapsedTime(&gpu_time, start_gpu, stop_gpu));
+
+    // Create chrono objects for timing CPU execution
+    auto start_cpu = std::chrono::high_resolution_clock::now();
+
     // Compute softmax rows CPU for verification
     softmax2D_rows_cpu<float>(input.data(), exp_sums.data(), N, M);
+    cudaDeviceSynchronize();
+
+    // Compute softmax elementwise CPU for verification
+    softmax2D_elementwise_cpu<float>(input.data(), exp_sums.data(), output_cpu.data(), N, M);
+    cudaDeviceSynchronize();
+
+    auto end_cpu = std::chrono::high_resolution_clock::now();
+    auto duration_cpu = std::chrono::duration_cast<std::chrono::microseconds>(end_cpu - start_cpu);
+
+    // Print CPU execution time
+    std::cout << "CPU Execution Time: " << duration_cpu.count()/1000 << " ms" << std::endl;
+
+    // Create CUDA events for timing GPU execution
+    cudaEvent_t start_gpu_elementwise, stop_gpu_elementwise;
+    CUDA_CHECK(cudaEventCreate(&start_gpu_elementwise));
+    CUDA_CHECK(cudaEventCreate(&stop_gpu_elementwise));
+
+    // Record start event for GPU elementwise computation
+    CUDA_CHECK(cudaEventRecord(start_gpu_elementwise));
 
     // Launch softmax kernel elementwise on GPU
     softmaxKernel2D_elementwise<<<gridDim, blockDim>>>(d_input, d_exp_sums, d_output, N, M);
     CUDA_CHECK(cudaGetLastError());
     CUDA_CHECK(cudaDeviceSynchronize());
 
+    // Record stop event for GPU elementwise computation
+    CUDA_CHECK(cudaEventRecord(stop_gpu_elementwise));
+    CUDA_CHECK(cudaEventSynchronize(stop_gpu_elementwise));
+
+    // Calculate GPU elementwise execution time
+    float gpu_elementwise_time;
+    CUDA_CHECK(cudaEventElapsedTime(&gpu_elementwise_time, start_gpu_elementwise, stop_gpu_elementwise));
+
     // Copy output from device to host
     CUDA_CHECK(cudaMemcpy(output_gpu.data(), d_output, N * M * sizeof(float), cudaMemcpyDeviceToHost));
-
-    // Compute softmax elementwise CPU for verification
-    softmax2D_elementwise_cpu<float>(input.data(), exp_sums.data(), output_cpu.data(), N, M);
 
     // Verify results
     bool passed = true;
@@ -276,10 +319,20 @@ int main() {
         std::cout << "Verification passed!" << std::endl;
     }
 
+    // Print GPU execution time
+    std::cout << "GPU Time: " << gpu_time + gpu_elementwise_time << " ms" << std::endl;
+    //std::cout << "GPU Elementwise Execution Time: " << gpu_elementwise_time << " ms" << std::endl;
+
     // Free device memory
     CUDA_CHECK(cudaFree(d_input));
     CUDA_CHECK(cudaFree(d_exp_sums));
     CUDA_CHECK(cudaFree(d_output));
+
+    // Destroy events
+    CUDA_CHECK(cudaEventDestroy(start_gpu));
+    CUDA_CHECK(cudaEventDestroy(stop_gpu));
+    CUDA_CHECK(cudaEventDestroy(start_gpu_elementwise));
+    CUDA_CHECK(cudaEventDestroy(stop_gpu_elementwise));
 
     return 0;
 }
