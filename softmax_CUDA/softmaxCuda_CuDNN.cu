@@ -66,12 +66,9 @@ void softmax_cudnn_cpu(float *input, float *output, int num_samples, int num_cla
 
 int main(int argc, char *argv[]) {
     // Parse command-line arguments
-    if (argc != 3) {
-        std::cerr << "Usage: " << argv[0] << " <num_samples> <num_classes>" << std::endl;
-        return 1;
-    }
-    const int num_samples = std::stoi(argv[1]);
-    const int num_classes = std::stoi(argv[2]);
+    
+    const int num_samples = 8192;//std::stoi(argv[1]);
+    const int num_classes = 8192;//std::stoi(argv[2]);
 
     // Generate random input
     std::vector<float> input(num_samples * num_classes);
@@ -88,36 +85,60 @@ int main(int argc, char *argv[]) {
     CUDA_CHECK(cudaMalloc(&d_input, num_samples * num_classes * sizeof(float)));
     CUDA_CHECK(cudaMalloc(&d_output, num_samples * num_classes * sizeof(float)));
 
+    cudaEvent_t start_cpu_to_gpu, stop_cpu_to_gpu;
+    cudaEventCreate(&start_cpu_to_gpu);
+    cudaEventCreate(&stop_cpu_to_gpu);
+    cudaEvent_t start_gpu_to_cpu, stop_gpu_to_cpu;
+    cudaEventCreate(&start_gpu_to_cpu);
+    cudaEventCreate(&stop_gpu_to_cpu);
+cudaEventRecord(start_cpu_to_gpu);
+
     // Copy input data to device
     CUDA_CHECK(cudaMemcpy(d_input, input.data(), num_samples * num_classes * sizeof(float), cudaMemcpyHostToDevice));
-
+cudaEventRecord(stop_cpu_to_gpu);
+    cudaEventSynchronize(stop_cpu_to_gpu);
     // Create CUDA events for timing GPU execution
-    cudaEvent_t start_gpu, stop_gpu;
-    CUDA_CHECK(cudaEventCreate(&start_gpu));
-    CUDA_CHECK(cudaEventCreate(&stop_gpu));
-
-    // Record start event for GPU
-    CUDA_CHECK(cudaEventRecord(start_gpu));
+     cudaEvent_t start_kernel, stop_kernel;
+    cudaEventCreate(&start_kernel);
+    cudaEventCreate(&stop_kernel);
+    cudaEventRecord(start_kernel);
 
     // Call softmax_cudnn on GPU
     softmax_cudnn(d_input, d_output, num_samples, num_classes);
-
+cudaEventRecord(stop_kernel);
+    cudaEventSynchronize(stop_kernel);
     // Record stop event for GPU
-    CUDA_CHECK(cudaEventRecord(stop_gpu));
-    CUDA_CHECK(cudaEventSynchronize(stop_gpu));
-
-    // Calculate GPU execution time
-    float gpu_time;
-    CUDA_CHECK(cudaEventElapsedTime(&gpu_time, start_gpu, stop_gpu));
+cudaEventRecord(start_gpu_to_cpu);
 
     // Copy output from device to host
     CUDA_CHECK(cudaMemcpy(output_gpu.data(), d_output, num_samples * num_classes * sizeof(float), cudaMemcpyDeviceToHost));
 
+cudaEventRecord(stop_gpu_to_cpu);
+    cudaEventSynchronize(stop_gpu_to_cpu);
+
+    // Calculate and print timings for CPU to GPU memory transfer
+    float duration_cpu_to_gpu;
+    cudaEventElapsedTime(&duration_cpu_to_gpu, start_cpu_to_gpu, stop_cpu_to_gpu);
+    std::cout << "CPU to GPU Memory Transfer Time: " << duration_cpu_to_gpu << " ms" << std::endl;
+
+    // Calculate and print timings for GPU kernel execution
+    float duration_gpu_execution;
+    cudaEventElapsedTime(&duration_gpu_execution, start_kernel, stop_kernel);
+    std::cout << "GPU Kernel Execution Time: " << duration_gpu_execution << " ms" << std::endl;
+
+    // Calculate and print timings for GPU to CPU memory transfer
+    float duration_gpu_to_cpu;
+    cudaEventElapsedTime(&duration_gpu_to_cpu, start_gpu_to_cpu, stop_gpu_to_cpu);
+    std::cout << "GPU to CPU Memory Transfer Time: " << duration_gpu_to_cpu << " ms" << std::endl;
+
+    // Total GPU execution time
+    float total_gpu_time = duration_cpu_to_gpu + duration_gpu_execution + duration_gpu_to_cpu;
+    std::cout << "Total GPU Execution Time: " << total_gpu_time << " ms" << std::endl;
     // Perform softmax on CPU for verification
     auto start_cpu = std::chrono::high_resolution_clock::now();
     softmax_cudnn_cpu(input.data(), output_cpu.data(), num_samples, num_classes);
     auto end_cpu = std::chrono::high_resolution_clock::now();
-    auto duration_cpu = std::chrono::duration_cast<std::chrono::microseconds>(end_cpu - start_cpu);
+    auto duration_cpu = std::chrono::duration_cast<std::chrono::milliseconds>(end_cpu - start_cpu);
 
     // Verify results
     bool passed = true;
@@ -133,9 +154,6 @@ int main(int argc, char *argv[]) {
         std::cout << "Verification passed!" << std::endl;
     }
 
-    // Print GPU execution time
-    std::cout << "GPU Execution Time: " << gpu_time << " ms" << std::endl;
-
     // Print CPU execution time
     std::cout << "CPU Execution Time: " << duration_cpu.count()/1000 << " ms" << std::endl;
 
@@ -144,8 +162,12 @@ int main(int argc, char *argv[]) {
     CUDA_CHECK(cudaFree(d_output));
 
     // Destroy events
-    CUDA_CHECK(cudaEventDestroy(start_gpu));
-    CUDA_CHECK(cudaEventDestroy(stop_gpu));
+    cudaEventDestroy(start_cpu_to_gpu);
+    cudaEventDestroy(stop_cpu_to_gpu);
+    cudaEventDestroy(start_gpu_to_cpu);
+    cudaEventDestroy(stop_gpu_to_cpu);
+    cudaEventDestroy(start_kernel);
+    cudaEventDestroy(stop_kernel);
 
     return 0;
 }

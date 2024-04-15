@@ -287,8 +287,7 @@ int main(int argc, char *argv[]) {
     float *input_host = (float*)malloc(rows * cols * sizeof(float));
     float *output_host_cpu = (float*)malloc(rows * cols * sizeof(float));
     float *output_host_gpu = (float*)malloc(rows * cols * sizeof(float));
-        srand(1234); // Choose any seed value
-
+    srand(1234); // Choose any seed value
 
     // Initialize input data
     for (int i = 0; i < rows * cols; i++) {
@@ -325,7 +324,7 @@ int main(int argc, char *argv[]) {
     cudaEventCreate(&start_kernel);
     cudaEventCreate(&stop_kernel);
     cudaEventRecord(start_kernel);
-    softmax_kernel_naive<<<numBlocks, blockSize>>>(input_device, output_device, rows, cols);
+    softmax_kernel_reduction2<<<numBlocks, blockSize>>>(input_device, output_device, rows, cols);
     cudaEventRecord(stop_kernel);
     cudaEventSynchronize(stop_kernel);
 

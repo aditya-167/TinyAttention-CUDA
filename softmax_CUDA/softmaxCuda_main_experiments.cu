@@ -25,6 +25,7 @@ const int BLOCK_SIZE = 32;
 
 #include <iostream>
 #include <math.h>
+/*
 __global__ void softmax_kernel_coalesced_coarsened(float *input, float *output, int rows, int cols, int coarsening_factor) {
     int idx = threadIdx.x + blockIdx.x * blockDim.x;
     if (idx < rows) {
@@ -174,7 +175,7 @@ __global__ void softmax_kernel_naive_batched(float *input, float *output, int ba
         }
     }
 }
-
+*/
 
 void softmax_cudnn(float *input, float *output, int num_samples, int num_classes) {
     // Set up cuDNN
@@ -197,7 +198,7 @@ void softmax_cudnn(float *input, float *output, int num_samples, int num_classes
     cudnnDestroyTensorDescriptor(output_desc);
     cudnnDestroy(cudnn);
 }
-
+/*
 void run_softmax_naive(torch::Tensor A, torch::Tensor C){
     const int seq_len = A.size(2);
     const int head_embd = A.size(3);
@@ -242,7 +243,7 @@ void run_softmax_batched_naive(torch::Tensor A, torch::Tensor C){
 
 
 }
-
+*/
 void run_softmax_cuDNN(torch::Tensor A, torch::Tensor C){
     const int seq_len = A.size(2);
     const int head_embd = A.size(3);
@@ -269,7 +270,7 @@ void run_softmax_cuDNN(torch::Tensor A, torch::Tensor C){
     }
 
 }
-
+/*
 
 void run_softmax_thread_coarse(torch::Tensor A, torch::Tensor C){
     const int seq_len = A.size(2);
@@ -322,7 +323,7 @@ void run_softmax_optimized(torch::Tensor A, torch::Tensor C){
     }
     cudaFree(d_sums);
 }
-
+*/
 /*************************************************************************** Invocations*********************************************************/
 
 torch::Tensor forward(torch::Tensor A) {
@@ -333,17 +334,13 @@ torch::Tensor forward(torch::Tensor A) {
     const int M = seq_len;
     const int N = head_embd;
     double start, end;
-    start = getTimeStamp();
     torch::Tensor C = torch::zeros({batch_size, n_head, M, N}, A.options().device(torch::kCUDA));
     
-    run_softmax_optimized(A,C);
+    run_softmax_cuDNN(A,C);
 
     //softmax_kernel_naive<<<gridDim, blockDim>>>(A_data, C_data, M, N, softmax_scale);
     cudaDeviceSynchronize();
     //cudaFree(d_sums);
-
-    end = getTimeStamp();
-    printf("Time taken: %lf\n", (end-start));
     return C;
 }
 
